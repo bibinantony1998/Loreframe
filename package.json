@@ -1,0 +1,41 @@
+{
+  "name": "historical-documentary-generator-backend",
+  "version": "1.0.0",
+  "description": "Multi-agent AI workflow backend for historical documentary video generation",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@ffprobe-installer/ffprobe": "^2.1.2",
+    "@google-cloud/text-to-speech": "^5.8.0",
+    "@langchain/core": "^0.3.38",
+    "@langchain/google-genai": "^0.1.9",
+    "@langchain/langgraph": "^0.2.45",
+    "@prisma/client": "^6.3.0",
+    "bullmq": "^5.41.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "ioredis": "^5.5.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/fluent-ffmpeg": "^2.1.27",
+    "@types/node": "^22.13.1",
+    "prisma": "^6.3.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

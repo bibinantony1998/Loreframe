@@ -1,0 +1,41 @@
+// Prisma schema for Historical Documentary Video Generation System
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model VideoJob {
+  id                  String         @id @default(uuid())
+  topic               String
+  targetLengthMinutes Int            @default(5)
+  status              String         @default("PENDING") // PENDING, PLANNING, SCRIPTING, ASSET_GENERATION, COMPLETED, FAILED
+  error               String?
+  metadata            String?        // JSON string for additional parameters or state
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  segments            VideoSegment[]
+}
+
+model VideoSegment {
+  id              String   @id @default(uuid())
+  jobId           String
+  sequenceIndex   Int
+  title           String?
+  narrationScript String?
+  imagePrompt     String?
+  audioUrl        String?
+  imageUrl        String?
+  status          String   @default("PENDING") // PENDING, SCRIPTED, ASSETS_READY, COMPLETED, FAILED
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  job VideoJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([sequenceIndex])
+}
