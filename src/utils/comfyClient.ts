@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../config/env';
 import { sleep } from './rateLimiter';
+import { getShutdownSignal, isShuttingDown } from './shutdownManager';
 
 export async function generateComfyImage(
   promptText: string,
@@ -71,6 +72,7 @@ export async function generateComfyImage(
     response = await fetch(promptEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: getShutdownSignal(),
       body: JSON.stringify({ prompt: promptWorkflow }),
     });
   } catch (netErr) {
@@ -105,10 +107,13 @@ export async function generateComfyImage(
   let outputImageMeta: { filename: string; subfolder: string; type: string } | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (isShuttingDown()) {
+      throw new Error('ComfyUI generation cancelled: Server process is shutting down.');
+    }
     await sleep(2000);
 
     try {
-      const historyRes = await fetch(historyUrl);
+      const historyRes = await fetch(historyUrl, { signal: getShutdownSignal() });
       if (historyRes.ok) {
         const historyData = (await historyRes.json()) as Record<string, any>;
         const jobHistory = historyData[promptId];

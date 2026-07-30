@@ -40,3 +40,4 @@ Thumbs.db
 *.db
 *.db-journal
 *.sqlite
+public/

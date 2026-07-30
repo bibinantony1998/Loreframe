@@ -6,6 +6,7 @@ import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
 import { config } from '../../config/env';
+import { getShutdownSignal, isShuttingDown } from '../../utils/shutdownManager';
 
 // Set static FFmpeg binary path for audio normalization
 if (ffmpegInstaller) {
@@ -184,10 +185,14 @@ export async function textToAudioNode(state: GraphStateType): Promise<Partial<Gr
         const chunkBuffers: Buffer[] = [];
 
         for (let i = 0; i < sentences.length; i++) {
+          if (isShuttingDown()) {
+            throw new Error('Kokoro TTS synthesis cancelled: Server process is shutting down.');
+          }
           const sentence = sentences[i];
           const kokoroRes = await fetch(config.kokoroBaseUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: getShutdownSignal(),
             body: JSON.stringify({
               model: 'kokoro',
               input: sentence,

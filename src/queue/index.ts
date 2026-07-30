@@ -21,3 +21,13 @@ export const videoQueue = new Queue(VIDEO_GENERATION_QUEUE_NAME, {
     removeOnFail: 500,
   },
 });
+
+export async function closeQueueAndRedis(): Promise<void> {
+  try {
+    await videoQueue.close();
+    await redisConnection.quit();
+    console.log('[Redis] Queue and Redis connection closed.');
+  } catch (err) {
+    console.warn('[Redis] Warning closing Redis connection:', (err as Error).message);
+  }
+}
