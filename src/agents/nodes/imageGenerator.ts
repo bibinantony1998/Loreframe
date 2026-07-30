@@ -8,7 +8,7 @@ import { generateComfyImage } from '../../utils/comfyClient';
 
 export async function imageGeneratorNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
   const segmentId = state.currentSegmentId;
-  console.log(`[ImageGenerator Agent] Generating 16:9 image asset for segmentId: ${segmentId}...`);
+  console.log(`[ImageGenerator Agent] Generating 16:9 visual assets for segmentId: ${segmentId}...`);
 
   if (!segmentId) {
     console.error('[ImageGenerator Agent] Missing currentSegmentId in state.');
@@ -28,33 +28,57 @@ export async function imageGeneratorNode(state: GraphStateType): Promise<Partial
       throw new Error(`VideoSegment ${segmentId} missing image prompt.`);
     }
 
-    let relativeImageUrl = '';
-
-    // 2. Generate image using ComfyUI REST API or fallback renderer
-    if (config.imageProvider === 'comfyui') {
-      try {
-        const outputFilename = `segment_${segmentId}.png`;
-        relativeImageUrl = await generateComfyImage(segment.imagePrompt, outputFilename);
-      } catch (comfyError) {
-        console.warn(
-          `[ImageGenerator Agent] ComfyUI generation failed (${(comfyError as Error).message}). Falling back to graphic frame renderer...`
-        );
-        relativeImageUrl = await renderFallbackAsset(segmentId, segment.title || 'Chapter', segment.imagePrompt);
+    // 2. Parse image prompts array or single prompt
+    let prompts: string[] = [];
+    try {
+      const parsed = JSON.parse(segment.imagePrompt);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        prompts = parsed.map((p) => String(p).trim());
+      } else {
+        prompts = [segment.imagePrompt];
       }
-    } else {
-      relativeImageUrl = await renderFallbackAsset(segmentId, segment.title || 'Chapter', segment.imagePrompt);
+    } catch {
+      prompts = [segment.imagePrompt];
     }
 
-    // 3. Update VideoSegment in Prisma DB with image URL
+    console.log(`[ImageGenerator Agent] Generating ${prompts.length} scene image(s) for segment ${segmentId}...`);
+
+    const imagePaths: string[] = [];
+
+    // 3. Generate image for each prompt scene
+    for (let index = 0; index < prompts.length; index++) {
+      const promptText = prompts[index];
+      const filename = prompts.length > 1 ? `segment_${segmentId}_${index}.png` : `segment_${segmentId}.png`;
+      let relativeImageUrl = '';
+
+      if (config.imageProvider === 'comfyui') {
+        try {
+          relativeImageUrl = await generateComfyImage(promptText, filename);
+        } catch (comfyError) {
+          console.warn(
+            `[ImageGenerator Agent] ComfyUI generation failed for scene ${index + 1}/${prompts.length} (${(comfyError as Error).message}). Using fallback asset...`
+          );
+          relativeImageUrl = await renderFallbackAsset(segmentId, index, segment.title || 'Chapter', promptText);
+        }
+      } else {
+        relativeImageUrl = await renderFallbackAsset(segmentId, index, segment.title || 'Chapter', promptText);
+      }
+
+      imagePaths.push(relativeImageUrl);
+    }
+
+    const jsonImageUrls = imagePaths.length === 1 ? imagePaths[0] : JSON.stringify(imagePaths);
+
+    // 4. Update VideoSegment in Prisma DB with image URL(s)
     await prisma.videoSegment.update({
       where: { id: segmentId },
       data: {
-        imageUrl: relativeImageUrl,
+        imageUrl: jsonImageUrls,
         status: 'ASSETS_READY',
       },
     });
 
-    console.log(`[ImageGenerator Agent] Image asset saved (${relativeImageUrl}).`);
+    console.log(`[ImageGenerator Agent] Saved ${imagePaths.length} image asset(s) for segment ${segmentId}.`);
 
     return {
       workflowStatus: 'IMAGE_GENERATED',
@@ -68,33 +92,41 @@ export async function imageGeneratorNode(state: GraphStateType): Promise<Partial
   }
 }
 
-async function renderFallbackAsset(segmentId: string, title: string, promptText: string): Promise<string> {
+async function renderFallbackAsset(
+  segmentId: string,
+  index: number,
+  title: string,
+  promptText: string
+): Promise<string> {
   const imagesDir = path.join(process.cwd(), 'public', 'images');
   if (!fs.existsSync(imagesDir)) {
     fs.mkdirSync(imagesDir, { recursive: true });
   }
 
-  const filename = `segment_${segmentId}.png`;
+  const filename = index > 0 ? `segment_${segmentId}_${index}.png` : `segment_${segmentId}.png`;
   const filePath = path.join(imagesDir, filename);
+
+  const colors = [
+    { bg1: '#0f172a', bg2: '#1e293b', gold: '#f59e0b' },
+    { bg1: '#1e1b4b', bg2: '#312e81', gold: '#fbbf24' },
+    { bg1: '#18181b', bg2: '#27272a', gold: '#eab308' },
+    { bg1: '#022c22', bg2: '#064e3b', gold: '#10b981' },
+  ];
+  const theme = colors[index % colors.length];
 
   const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
     <defs>
-      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#0f172a" />
-        <stop offset="50%" stop-color="#1e293b" />
-        <stop offset="100%" stop-color="#020617" />
-      </linearGradient>
-      <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="0%">
-        <stop offset="0%" stop-color="#f59e0b" />
-        <stop offset="100%" stop-color="#d97706" />
+      <linearGradient id="bg_${index}" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="${theme.bg1}" />
+        <stop offset="100%" stop-color="${theme.bg2}" />
       </linearGradient>
     </defs>
-    <rect width="1920" height="1080" fill="url(#bg)"/>
-    <circle cx="960" cy="540" r="400" fill="#f59e0b" opacity="0.05" />
-    <rect x="100" y="100" width="1720" height="880" fill="none" stroke="url(#gold)" stroke-width="4" opacity="0.4" />
+    <rect width="1920" height="1080" fill="url(#bg_${index})"/>
+    <circle cx="960" cy="540" r="400" fill="${theme.gold}" opacity="0.05" />
+    <rect x="100" y="100" width="1720" height="880" fill="none" stroke="${theme.gold}" stroke-width="4" opacity="0.4" />
     
-    <text x="960" y="460" font-family="Georgia, serif" font-size="54" font-weight="bold" fill="#fef3c7" text-anchor="middle">
-      ${escapeXml(title || 'Historical Chapter')}
+    <text x="960" y="440" font-family="Georgia, serif" font-size="54" font-weight="bold" fill="#fef3c7" text-anchor="middle">
+      ${escapeXml(title || 'Historical Chapter')} (Scene ${index + 1})
     </text>
     
     <text x="960" y="560" font-family="sans-serif" font-size="24" fill="#94a3b8" text-anchor="middle" width="1400">
@@ -102,7 +134,7 @@ async function renderFallbackAsset(segmentId: string, title: string, promptText:
     </text>
     
     <text x="960" y="940" font-family="sans-serif" font-size="18" fill="#64748b" text-anchor="middle">
-      16:9 Widescreen Documentary Artwork Frame
+      16:9 Widescreen Visual Scene ${index + 1}
     </text>
   </svg>`;
 

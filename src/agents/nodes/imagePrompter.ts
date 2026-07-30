@@ -4,9 +4,12 @@ import { GraphStateType } from '../graphState';
 import { executeWithRateLimit } from '../../utils/rateLimiter';
 import { config } from '../../config/env';
 
+const MANDATORY_STYLE_SUFFIX =
+  ', highly detailed cinematic documentary illustration, historical art style, watercolor and ink, wide-angle aerial perspective, intricate detail, muted earth tones, parchment texture, masterpiece, 8k';
+
 export async function imagePrompterNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
   const segmentId = state.currentSegmentId;
-  console.log(`[ImagePrompter Agent] Crafting visual prompt for segmentId: ${segmentId}...`);
+  console.log(`[ImagePrompter Agent] Crafting visual prompts for segmentId: ${segmentId}...`);
 
   if (!segmentId) {
     console.error('[ImagePrompter Agent] Missing currentSegmentId in state.');
@@ -26,54 +29,115 @@ export async function imagePrompterNode(state: GraphStateType): Promise<Partial<
       throw new Error(`VideoSegment ${segmentId} not found in database.`);
     }
 
-    // 2. Call LLM via Factory & Rate Limiter
+    const narrationText = (segment.narrationScript || '').trim();
+    const fallbackBase = narrationText.length > 20
+      ? narrationText.slice(0, 150)
+      : `Historical documentary scene for Chapter ${segment.sequenceIndex}: ${segment.title || state.topic}`;
+
+    // 2. Call LLM via Factory & Rate Limiter to produce 3-4 distinct scene prompts
     const prompt = `You are a master visual director and AI prompt engineer for high-end historical documentaries.
-Craft a highly detailed, cinematic image generation prompt for Chapter ${segment.sequenceIndex}: "${segment.title}".
+Craft an array of 3 to 4 distinct, highly detailed, illustrative visual prompts for Chapter ${segment.sequenceIndex}: "${segment.title || state.topic}".
 
 Documentary Topic: "${state.topic}"
-Chapter Title: "${segment.title}"
-Voiceover Narration Script: "${segment.narrationScript || ''}"
-Initial Visual Concept: "${segment.imagePrompt || 'Historical scene'}"
+Chapter Title: "${segment.title || ''}"
+Voiceover Narration Script: "${narrationText}"
 
 Instructions:
-- Write a single, highly descriptive prompt optimized for AI image generators (e.g. Imagen 3, Midjourney, DALL-E 3).
-- Focus on photorealism, historical accuracy, 16:9 widescreen composition, cinematic volumetric lighting, 8k resolution, and dramatic atmospheric depth.
-- Do NOT include markdown, commentary, or quotes. Output ONLY the raw image generation prompt string.`;
+- Return a JSON object with a "prompts" key containing an array of 3 to 4 distinct prompt strings.
+- Each prompt must describe a specific visual scene (e.g. Scene 1: architecture/palaces, Scene 2: military legions/battles, Scene 3: rulers/aristocrats, Scene 4: landscapes/events).
+- Describe the visual composition, subjects, setting, lighting, and mood clearly in text.
+- Output JSON format strictly:
+{
+  "prompts": [
+    "Wide-angle illustrative scene depicting...",
+    "Detailed historical painting showing...",
+    "Cinematic documentary artwork of...",
+    "Atmospheric composition portraying..."
+  ]
+}`;
 
-    const response = await executeWithRateLimit(
-      async (apiKey) => {
-        const model = createLLM({
-          requireJson: false,
-          apiKey: apiKey,
-          temperature: 0.7,
-        });
-        return model.invoke(prompt);
-      },
-      `ImagePrompter-${segment.sequenceIndex}`,
-      state.jobId,
-      prompt
-    );
+    let promptsArray: string[] = [];
 
-    const detailedPrompt = typeof response.content === 'string' ? response.content.trim() : JSON.stringify(response.content);
+    try {
+      const response = await executeWithRateLimit(
+        async (apiKey) => {
+          const model = createLLM({
+            requireJson: true,
+            apiKey: apiKey,
+            temperature: 0.7,
+          });
+          return model.invoke(prompt);
+        },
+        `ImagePrompter-${segment.sequenceIndex}`,
+        state.jobId,
+        prompt
+      );
 
-    // 3. Update VideoSegment in Prisma DB
+      const contentText = typeof response.content === 'string' ? response.content.trim() : JSON.stringify(response.content);
+
+      const cleanedJson = contentText.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
+      const parsed = JSON.parse(cleanedJson);
+
+      if (Array.isArray(parsed.prompts) && parsed.prompts.length > 0) {
+        promptsArray = parsed.prompts.map(extractStringFromPrompt);
+      } else if (Array.isArray(parsed) && parsed.length > 0) {
+        promptsArray = parsed.map(extractStringFromPrompt);
+      }
+    } catch (parseErr) {
+      console.warn(`[ImagePrompter Agent] Prompt generation/parsing fallback: ${(parseErr as Error).message}`);
+      promptsArray = [
+        `Cinematic documentary illustration of ${segment.title || state.topic}`,
+        `Wide-angle historical artwork depicting ${state.topic}`,
+        `Detailed documentary scene showing ${segment.title || state.topic}`,
+      ];
+    }
+
+    if (promptsArray.length === 0) {
+      promptsArray = [`Cinematic documentary illustration of ${segment.title || state.topic}`];
+    }
+
+    // 3. Force-append mandatory artistic style suffix & guarantee no [object Object]
+    const finalPrompts = promptsArray.map((p) => {
+      const cleanP = extractStringFromPrompt(p);
+      const trimmed = cleanP.trim();
+      if (trimmed.endsWith(MANDATORY_STYLE_SUFFIX)) return trimmed;
+      return `${trimmed}${MANDATORY_STYLE_SUFFIX}`;
+    });
+
+    const jsonPromptsString = JSON.stringify(finalPrompts);
+
+    // 4. Update VideoSegment in Prisma DB
     await prisma.videoSegment.update({
       where: { id: segmentId },
       data: {
-        imagePrompt: detailedPrompt,
+        imagePrompt: jsonPromptsString,
       },
     });
 
-    console.log(`[ImagePrompter Agent] Created visual prompt for segment ${segmentId}: "${detailedPrompt.slice(0, 60)}..."`);
+    console.log(
+      `[ImagePrompter Agent] Created ${finalPrompts.length} documentary illustration prompt(s) for segment ${segmentId}. Sample: "${finalPrompts[0].slice(0, 80)}..."`
+    );
 
     return {
       workflowStatus: 'IMAGE_PROMPTED',
     };
   } catch (error) {
-    console.error(`[ImagePrompter Agent] Error generating image prompt for segment ${segmentId}:`, error);
+    console.error(`[ImagePrompter Agent] Error generating image prompts for segment ${segmentId}:`, error);
     return {
       error: `ImagePrompter error: ${(error as Error).message}`,
       workflowStatus: 'FAILED',
     };
   }
+}
+
+function extractStringFromPrompt(val: any): string {
+  if (typeof val === 'string') return val;
+  if (!val) return 'Cinematic documentary illustration of historical scene';
+  if (typeof val === 'object') {
+    if (typeof val.prompt === 'string') return val.prompt;
+    if (typeof val.text === 'string') return val.text;
+    if (typeof val.description === 'string') return val.description;
+    return JSON.stringify(val);
+  }
+  return String(val);
 }

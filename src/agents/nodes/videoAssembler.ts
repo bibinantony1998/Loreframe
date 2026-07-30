@@ -61,66 +61,46 @@ function getAudioDuration(audioFilePath: string): Promise<number> {
   });
 }
 
-// Helper to render single video clip (image + audio + Ken Burns zoom effect)
-function renderSegmentClip(
+/**
+ * Renders a single image sub-clip with Ken Burns motion effect over subDuration.
+ */
+function renderImageSubClip(
   imagePath: string,
-  audioPath: string,
   outputPath: string,
-  duration: number
+  subDuration: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Check file existence before FFmpeg execution
-    if (imagePath && !fs.existsSync(imagePath)) {
-      console.warn(`[VideoAssembler] Missing image input file: ${imagePath}. Using color canvas fallback.`);
-    }
-
-    if (audioPath && !fs.existsSync(audioPath)) {
-      console.warn(`[VideoAssembler] Missing audio input file: ${audioPath}. Using silent audio fallback.`);
-    }
-
-    // Zoompan filter: slow Ken Burns zoom in over duration
-    const frames = Math.ceil(duration * 25);
+    const frames = Math.ceil(subDuration * 25);
     const filterStr = `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.001,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1920x1080,format=yuv420p`;
 
     const command = ffmpeg();
 
     if (imagePath && fs.existsSync(imagePath) && fs.statSync(imagePath).size > 0) {
-      command.input(imagePath).loop(duration);
+      command.input(imagePath).loop(subDuration);
     } else {
-      // Fallback color canvas if image is missing or empty
-      command.input('color=c=0x0f172a:s=1920x1080').inputFormat('lavfi').duration(duration);
-    }
-
-    if (audioPath && fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) {
-      command.input(audioPath);
-    } else {
-      command.input('anullsrc=r=24000:cl=stereo').inputFormat('lavfi').duration(duration);
+      command.input('color=c=0x0f172a:s=1920x1080').inputFormat('lavfi').duration(subDuration);
     }
 
     command
       .videoFilters(filterStr)
       .outputOptions([
         '-c:v libx264',
-        '-pix_fmt yuv420p',   // CRITICAL for macOS QuickTime compatibility
-        '-c:a aac',
-        '-b:a 128k',
-        '-ar 24000',          // CRITICAL: Match Kokoro native 24kHz sample rate to prevent distortion
-        '-shortest',
+        '-pix_fmt yuv420p',
+        '-r 25',
       ])
       .output(outputPath)
-      .on('end', () => {
-        console.log(`[VideoAssembler] Rendered clip: ${outputPath} (${duration.toFixed(1)}s)`);
-        resolve();
-      })
+      .on('end', () => resolve())
       .on('error', (err) => {
-        console.error(`[VideoAssembler] Clip rendering failed for ${outputPath}:`, err.message);
+        console.error(`[VideoAssembler] Image sub-clip rendering failed for ${outputPath}:`, err.message);
         reject(err);
       })
       .run();
   });
 }
 
-// Helper to concatenate list of MP4 clips into final output video
+/**
+ * Concatenates visual clips into a single video file.
+ */
 function concatenateClips(clipPaths: string[], finalOutputPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (clipPaths.length === 0) {
@@ -134,7 +114,6 @@ function concatenateClips(clipPaths: string[], finalOutputPath: string): Promise
     }
 
     if (clipPaths.length === 1) {
-      // Single clip: copy to final destination
       fs.copyFileSync(clipPaths[0], finalOutputPath);
       return resolve();
     }
@@ -143,15 +122,95 @@ function concatenateClips(clipPaths: string[], finalOutputPath: string): Promise
     clipPaths.forEach((clip) => command.input(clip));
 
     command
-      .on('end', () => {
-        console.log(`[VideoAssembler] Successfully concatenated ${clipPaths.length} clips into ${finalOutputPath}`);
-        resolve();
-      })
+      .on('end', () => resolve())
       .on('error', (err) => {
-        console.error(`[VideoAssembler] Concatenation error:`, err.message);
+        console.error(`[VideoAssembler] Visual concatenation error:`, err.message);
         reject(err);
       })
       .mergeToFile(finalOutputPath, process.cwd());
+  });
+}
+
+/**
+ * Combines all audio segment tracks into a single continuous master audio track,
+ * completely eliminating silence dropouts between chapter transitions.
+ */
+function concatenateAudioTracks(audioPaths: string[], masterAudioPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (audioPaths.length === 0) {
+      return reject(new Error('No audio tracks provided for master audio concatenation'));
+    }
+
+    const validAudioPaths = audioPaths.filter((p) => p && fs.existsSync(p) && fs.statSync(p).size > 0);
+
+    if (validAudioPaths.length === 0) {
+      return reject(new Error('No valid non-empty audio files found for master audio concatenation'));
+    }
+
+    if (validAudioPaths.length === 1) {
+      fs.copyFileSync(validAudioPaths[0], masterAudioPath);
+      return resolve();
+    }
+
+    // Try buffer concatenation for MP3 tracks
+    const isAllMp3 = validAudioPaths.every((p) => p.toLowerCase().endsWith('.mp3'));
+    if (isAllMp3) {
+      try {
+        const buffers = validAudioPaths.map((p) => fs.readFileSync(p));
+        const combined = Buffer.concat(buffers);
+        fs.writeFileSync(masterAudioPath, combined);
+        console.log(`[VideoAssembler] Combined ${validAudioPaths.length} MP3 audio tracks into master audio.`);
+        return resolve();
+      } catch (err) {
+        console.warn(`[VideoAssembler] Buffer concatenation warning (${(err as Error).message}), falling back to FFmpeg concat...`);
+      }
+    }
+
+    const command = ffmpeg();
+    validAudioPaths.forEach((p) => command.input(p));
+
+    command
+      .on('end', () => {
+        console.log(`[VideoAssembler] Concatenated ${validAudioPaths.length} audio tracks into master audio.`);
+        resolve();
+      })
+      .on('error', (err) => {
+        console.error(`[VideoAssembler] Master audio concatenation error:`, err.message);
+        reject(err);
+      })
+      .mergeToFile(masterAudioPath, process.cwd());
+  });
+}
+
+/**
+ * Merges master visual video and continuous master audio track into final MP4 video.
+ */
+function mergeVisualsAndAudio(
+  visualsPath: string,
+  masterAudioPath: string,
+  finalOutputPath: string
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    ffmpeg()
+      .input(visualsPath)
+      .input(masterAudioPath)
+      .outputOptions([
+        '-c:v copy',
+        '-c:a aac',
+        '-b:a 192k',
+        '-ar 44100',
+        '-shortest',
+      ])
+      .output(finalOutputPath)
+      .on('end', () => {
+        console.log(`[VideoAssembler] Final documentary video merged: ${finalOutputPath}`);
+        resolve();
+      })
+      .on('error', (err) => {
+        console.error(`[VideoAssembler] Error merging master visuals and audio:`, err.message);
+        reject(err);
+      })
+      .run();
   });
 }
 
@@ -192,74 +251,124 @@ export async function videoAssemblerNode(state: GraphStateType): Promise<Partial
       data: { status: 'ASSET_GENERATION' },
     });
 
-    // 3. Process and render individual clips
-    const clipPaths: string[] = [];
+    const tempSubClips: string[] = [];
+    const validAudioPaths: string[] = [];
+
+    // 3. Process each chapter segment and generate multi-image sub-clips
     for (const segment of segments) {
       const audioAbsPath = segment.audioUrl
         ? path.join(process.cwd(), segment.audioUrl.replace(/^\//, ''))
         : '';
-      const imageAbsPath = segment.imageUrl
-        ? path.join(process.cwd(), segment.imageUrl.replace(/^\//, ''))
-        : '';
 
-      // Validate inputs if explicitly supplied
       if (segment.audioUrl && !fs.existsSync(audioAbsPath)) {
-        throw new Error(`Missing input file for FFmpeg: ${audioAbsPath}`);
-      }
-      if (segment.imageUrl && !fs.existsSync(imageAbsPath)) {
-        throw new Error(`Missing input file for FFmpeg: ${imageAbsPath}`);
+        throw new Error(`Missing audio file for segment ${segment.id}: ${audioAbsPath}`);
       }
 
-      const duration = await getAudioDuration(audioAbsPath);
-      const clipPath = path.join(videosDir, `clip_${segment.id}.mp4`);
+      if (audioAbsPath) {
+        validAudioPaths.push(audioAbsPath);
+      }
 
-      const rasterImagePath = await ensureRasterImage(imageAbsPath);
-      await renderSegmentClip(rasterImagePath, audioAbsPath, clipPath, duration);
-      clipPaths.push(clipPath);
+      const totalSegmentDuration = await getAudioDuration(audioAbsPath);
+
+      // Parse image URLs (single string or JSON array)
+      let rawImageUrls: string[] = [];
+      if (segment.imageUrl) {
+        try {
+          const parsed = JSON.parse(segment.imageUrl);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            rawImageUrls = parsed;
+          } else {
+            rawImageUrls = [segment.imageUrl];
+          }
+        } catch {
+          rawImageUrls = [segment.imageUrl];
+        }
+      }
+
+      const imageAbsPaths: string[] = [];
+      for (const relUrl of rawImageUrls) {
+        const absPath = path.join(process.cwd(), relUrl.replace(/^\//, ''));
+        if (fs.existsSync(absPath)) {
+          const raster = await ensureRasterImage(absPath);
+          imageAbsPaths.push(raster);
+        }
+      }
+
+      const sceneCount = Math.max(imageAbsPaths.length, 1);
+      const subDuration = totalSegmentDuration / sceneCount;
+
+      console.log(
+        `[VideoAssembler] Chapter ${segment.sequenceIndex} ("${segment.title}"): Rendering ${sceneCount} visual scene(s) across ${totalSegmentDuration.toFixed(1)}s total duration...`
+      );
+
+      for (let imgIdx = 0; imgIdx < sceneCount; imgIdx++) {
+        const imgPath = imageAbsPaths[imgIdx] || '';
+        const subClipPath = path.join(videosDir, `clip_${segment.id}_sub_${imgIdx}.mp4`);
+
+        await renderImageSubClip(imgPath, subClipPath, subDuration);
+        tempSubClips.push(subClipPath);
+      }
     }
 
-    // 4. Concatenate all segment clips into final video
-    console.log(`[VideoAssembler] Concatenating ${clipPaths.length} segment clips into ${finalVideoPath}...`);
-    await concatenateClips(clipPaths, finalVideoPath);
+    // 4. Concatenate visual sub-clips into a continuous master visual track
+    const masterVisualsPath = path.join(videosDir, `master_visuals_${state.jobId}.mp4`);
+    console.log(`[VideoAssembler] Concatenating ${tempSubClips.length} visual scene clips into master visual track...`);
+    await concatenateClips(tempSubClips, masterVisualsPath);
 
-    // 5. Garbage collection: Clean up intermediate clip, audio, and image files
+    // 5. Concatenate audio tracks into a continuous master audio track
+    const masterAudioPath = path.join(videosDir, `master_audio_${state.jobId}.mp3`);
+    console.log(`[VideoAssembler] Combining ${validAudioPaths.length} audio tracks into continuous master audio track...`);
+    await concatenateAudioTracks(validAudioPaths, masterAudioPath);
+
+    // 6. Merge master visual track + continuous master audio track into final video
+    console.log(`[VideoAssembler] Merging continuous master visuals and master audio into final video...`);
+    await mergeVisualsAndAudio(masterVisualsPath, masterAudioPath, finalVideoPath);
+
+    // 7. Cleanup temporary intermediate files
     console.log(`[VideoAssembler] Cleaning up temporary intermediate asset files for Job ${state.jobId}...`);
 
-    for (const cp of clipPaths) {
+    const filesToDelete = [masterVisualsPath, masterAudioPath, ...tempSubClips];
+    for (const f of filesToDelete) {
       try {
-        if (fs.existsSync(cp)) await fs.promises.unlink(cp);
+        if (fs.existsSync(f)) await fs.promises.unlink(f);
       } catch (e) {
-        console.warn(`[VideoAssembler] Warning deleting clip file ${cp}: ${(e as Error).message}`);
+        console.warn(`[VideoAssembler] Warning deleting temp file ${f}: ${(e as Error).message}`);
       }
     }
 
     for (const segment of segments) {
       if (segment.audioUrl) {
-        const audioAbsPath = path.join(process.cwd(), segment.audioUrl.replace(/^\//, ''));
+        const absPath = path.join(process.cwd(), segment.audioUrl.replace(/^\//, ''));
         try {
-          if (fs.existsSync(audioAbsPath)) {
-            await fs.promises.unlink(audioAbsPath);
-            console.log(`[VideoAssembler] Cleaned up temporary audio: ${audioAbsPath}`);
-          }
+          if (fs.existsSync(absPath)) await fs.promises.unlink(absPath);
         } catch (e) {
-          console.warn(`[VideoAssembler] Warning deleting temporary audio ${audioAbsPath}: ${(e as Error).message}`);
+          console.warn(`[VideoAssembler] Warning deleting audio ${absPath}: ${(e as Error).message}`);
         }
       }
 
       if (segment.imageUrl) {
-        const imageAbsPath = path.join(process.cwd(), segment.imageUrl.replace(/^\//, ''));
         try {
-          if (fs.existsSync(imageAbsPath)) {
-            await fs.promises.unlink(imageAbsPath);
-            console.log(`[VideoAssembler] Cleaned up temporary image: ${imageAbsPath}`);
+          let urls: string[] = [];
+          const parsed = JSON.parse(segment.imageUrl);
+          if (Array.isArray(parsed)) urls = parsed;
+          else urls = [segment.imageUrl];
+
+          for (const u of urls) {
+            const absPath = path.join(process.cwd(), u.replace(/^\//, ''));
+            if (fs.existsSync(absPath)) await fs.promises.unlink(absPath);
           }
-        } catch (e) {
-          console.warn(`[VideoAssembler] Warning deleting temporary image ${imageAbsPath}: ${(e as Error).message}`);
+        } catch {
+          const absPath = path.join(process.cwd(), segment.imageUrl.replace(/^\//, ''));
+          try {
+            if (fs.existsSync(absPath)) await fs.promises.unlink(absPath);
+          } catch (e) {
+            console.warn(`[VideoAssembler] Warning deleting image ${absPath}: ${(e as Error).message}`);
+          }
         }
       }
     }
 
-    // 6. Finalize Job status in database
+    // 8. Finalize Job status in database
     await prisma.videoJob.update({
       where: { id: state.jobId },
       data: {

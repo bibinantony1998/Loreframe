@@ -26,7 +26,15 @@ export async function generateComfyImage(
   const rawJson = fs.readFileSync(workflowPath, 'utf-8');
   const promptWorkflow = JSON.parse(rawJson);
 
-  // 2. Inject positive prompt text, randomize KSampler seed & auto-detect installed checkpoint
+  // 2. Inject positive prompt text, negative prompt, randomize KSampler seed & auto-detect installed checkpoint
+  let cleanPromptText = typeof promptText === 'string' ? promptText : JSON.stringify(promptText);
+  if (cleanPromptText.includes('[object Object]') || cleanPromptText.trim().length === 0) {
+    cleanPromptText =
+      'Cinematic documentary illustration of historical scene, watercolor and ink, wide-angle aerial perspective, intricate detail, muted earth tones, parchment texture, masterpiece, 8k';
+  }
+
+  const NEGATIVE_PROMPT = 'photorealistic, 3d render, modern art, low quality, blurry, text, watermark';
+
   let positiveNodeFound = false;
   const installedCheckpoints = await getInstalledComfyCheckpoints(comfyUrl);
 
@@ -34,9 +42,10 @@ export async function generateComfyImage(
     const node = promptWorkflow[nodeId];
     if (node.class_type === 'CLIPTextEncode') {
       const title = node._meta?.title?.toLowerCase() || '';
-      // Inject prompt into positive node (node 6 or title containing positive/not negative)
-      if (!title.includes('negative') || nodeId === '6') {
-        node.inputs.text = promptText;
+      if (title.includes('negative') || nodeId === '7') {
+        node.inputs.text = NEGATIVE_PROMPT;
+      } else if (!title.includes('negative') || nodeId === '6') {
+        node.inputs.text = cleanPromptText;
         positiveNodeFound = true;
       }
     } else if (node.class_type === 'KSampler') {
@@ -58,7 +67,7 @@ export async function generateComfyImage(
     // Fallback: search for first CLIPTextEncode node
     for (const nodeId of Object.keys(promptWorkflow)) {
       if (promptWorkflow[nodeId].class_type === 'CLIPTextEncode') {
-        promptWorkflow[nodeId].inputs.text = promptText;
+        promptWorkflow[nodeId].inputs.text = cleanPromptText;
         break;
       }
     }
