@@ -1,9 +1,46 @@
 import fs from 'fs';
 import path from 'path';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegInstaller from 'ffmpeg-static';
 import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
 import { config } from '../../config/env';
+
+// Set static FFmpeg binary path for audio normalization
+if (ffmpegInstaller) {
+  ffmpeg.setFfmpegPath(ffmpegInstaller);
+}
+
+/**
+ * Normalizes RIFF header chunk sizes and audio container metadata for downloaded WAV buffers.
+ * Solves "Duration: 00:00" metadata issues caused by streaming TTS responses.
+ */
+async function normalizeWavHeader(inputBuffer: Buffer, outputPath: string): Promise<void> {
+  const tempInputPath = `${outputPath}.tmp.wav`;
+  await fs.promises.writeFile(tempInputPath, inputBuffer);
+
+  return new Promise((resolve, reject) => {
+    ffmpeg(tempInputPath)
+      .outputOptions(['-c:a pcm_s16le', '-ar 24000', '-ac 1'])
+      .save(outputPath)
+      .on('end', async () => {
+        await fs.promises.unlink(tempInputPath).catch(() => {});
+        console.log(`[TextToAudio Agent] Normalized WAV container header & duration for: ${outputPath}`);
+        resolve();
+      })
+      .on('error', async (err) => {
+        await fs.promises.unlink(tempInputPath).catch(() => {});
+        console.warn(`[TextToAudio Agent] FFmpeg header normalization warning (${err.message}). Saving raw buffer...`);
+        try {
+          await fs.promises.writeFile(outputPath, inputBuffer);
+          resolve();
+        } catch (writeErr) {
+          reject(writeErr);
+        }
+      });
+  });
+}
 
 /**
  * Creates a valid, fully standard 44.1kHz 16-bit stereo PCM WAV file buffer.
@@ -60,6 +97,43 @@ function createValidWavBuffer(durationSec: number = 5.0): Buffer {
   return Buffer.concat([header, pcmData]);
 }
 
+/**
+ * Concatenates multiple WAV buffers into a single continuous WAV file,
+ * updating the master RIFF header and stripping intermediate headers.
+ */
+function concatenateWavBuffers(buffers: Buffer[]): Buffer {
+  if (buffers.length === 0) return Buffer.alloc(0);
+  if (buffers.length === 1) return buffers[0];
+
+  const firstHeader = buffers[0].subarray(0, 44);
+  if (firstHeader.toString('utf-8', 0, 4) !== 'RIFF' || firstHeader.toString('utf-8', 8, 12) !== 'WAVE') {
+    return Buffer.concat(buffers);
+  }
+
+  const pcmPayloads: Buffer[] = [];
+  let totalPcmDataSize = 0;
+
+  for (let i = 0; i < buffers.length; i++) {
+    const buf = buffers[i];
+    if (buf.length > 44 && buf.toString('utf-8', 0, 4) === 'RIFF') {
+      const pcm = buf.subarray(44);
+      pcmPayloads.push(pcm);
+      totalPcmDataSize += pcm.length;
+    } else if (buf.length > 0) {
+      pcmPayloads.push(buf);
+      totalPcmDataSize += buf.length;
+    }
+  }
+
+  const combinedHeader = Buffer.from(firstHeader);
+  const totalFileSize = 36 + totalPcmDataSize;
+
+  combinedHeader.writeUInt32LE(totalFileSize, 4);     // RIFF Chunk Size
+  combinedHeader.writeUInt32LE(totalPcmDataSize, 40); // "data" Sub-chunk Size
+
+  return Buffer.concat([combinedHeader, ...pcmPayloads]);
+}
+
 export async function textToAudioNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
   const segmentId = state.currentSegmentId;
   console.log(`[TextToAudio Agent] Synthesizing audio for segmentId: ${segmentId}...`);
@@ -99,34 +173,57 @@ export async function textToAudioNode(state: GraphStateType): Promise<Partial<Gr
           .replace(/[\n\r]+/g, ' ')
           .trim();
 
-        console.log(`[TextToAudio Agent] Querying local Kokoro TTS server at ${config.kokoroBaseUrl}...`);
-        const kokoroRes = await fetch(config.kokoroBaseUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'kokoro',
-            input: cleanText,
-            voice: config.kokoroVoice,
-            response_format: 'wav',
-            speed: 1.0,
-          }),
-        });
+        // Split text into individual sentence chunks to prevent Kokoro OOM container spikes
+        const rawSentences = cleanText.match(/[^.!?]+[.!?]+(\s|$)/g) || [cleanText];
+        const sentences = rawSentences.map((s) => s.trim()).filter((s) => s.length > 0);
 
-        if (!kokoroRes.ok) {
-          const errText = await kokoroRes.text();
-          throw new Error(`Kokoro TTS returned HTTP ${kokoroRes.status}: ${errText}`);
+        console.log(
+          `[TextToAudio Agent] Synthesizing ${sentences.length} sentence chunk(s) via Kokoro TTS at ${config.kokoroBaseUrl}...`
+        );
+
+        const chunkBuffers: Buffer[] = [];
+
+        for (let i = 0; i < sentences.length; i++) {
+          const sentence = sentences[i];
+          const kokoroRes = await fetch(config.kokoroBaseUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'kokoro',
+              input: sentence,
+              voice: config.kokoroVoice || 'am_adam',
+              response_format: 'mp3',
+            }),
+          });
+
+          if (!kokoroRes.ok) {
+            const errText = await kokoroRes.text();
+            throw new Error(`Kokoro TTS chunk ${i + 1}/${sentences.length} returned HTTP ${kokoroRes.status}: ${errText}`);
+          }
+
+          const arrayBuffer = await kokoroRes.arrayBuffer();
+          const chunkBuf = Buffer.from(arrayBuffer);
+
+          if (chunkBuf.byteLength >= 100) {
+            chunkBuffers.push(chunkBuf);
+          }
         }
 
-        const candidateBuffer = Buffer.from(await kokoroRes.arrayBuffer());
-        if (candidateBuffer.byteLength < 5000) {
-          console.warn(
-            `[TextToAudio Agent] Kokoro TTS response buffer too small (${candidateBuffer.byteLength} bytes). Discarding corrupted/error payload...`
-          );
-          audioBuffer = null;
-        } else {
-          audioBuffer = candidateBuffer;
-          fileExtension = 'wav';
-          console.log(`[TextToAudio Agent] Kokoro TTS generated ${audioBuffer.byteLength} bytes for segment ${segmentId}.`);
+        if (chunkBuffers.length > 0) {
+          const concatenatedBuffer = Buffer.concat(chunkBuffers);
+
+          if (concatenatedBuffer.byteLength < 1000) {
+            console.warn(
+              `[TextToAudio Agent] Concatenated Kokoro TTS response too small (${concatenatedBuffer.byteLength} bytes). Discarding...`
+            );
+            audioBuffer = null;
+          } else {
+            audioBuffer = concatenatedBuffer;
+            fileExtension = 'mp3';
+            console.log(
+              `[TextToAudio Agent] Kokoro TTS generated ${audioBuffer.byteLength} bytes across ${sentences.length} sentence chunk(s) for segment ${segmentId}.`
+            );
+          }
         }
       } catch (kokoroError) {
         console.warn(
@@ -165,7 +262,7 @@ export async function textToAudioNode(state: GraphStateType): Promise<Partial<Gr
     }
 
     // 4. Fallback synthesis if primary TTS provider not active or failed
-    if (!audioBuffer || audioBuffer.byteLength < 5000) {
+    if (!audioBuffer || audioBuffer.byteLength < 1000) {
       // Estimate duration based on word count (~150 words per minute -> ~2.5 words per sec)
       const wordCount = segment.narrationScript.split(/\s+/).filter(Boolean).length;
       const estimatedDurationSec = Math.max(Math.ceil(wordCount / 2.5), 4.0);
@@ -188,8 +285,12 @@ export async function textToAudioNode(state: GraphStateType): Promise<Partial<Gr
     const filePath = path.join(audioDir, filename);
     const relativeAudioUrl = `/public/audio/${filename}`;
 
-    // 5. Write audio file to local storage asynchronously
-    await fs.promises.writeFile(filePath, audioBuffer);
+    // 5. Save and normalize audio container headers
+    if (fileExtension === 'wav') {
+      await normalizeWavHeader(audioBuffer, filePath);
+    } else {
+      await fs.promises.writeFile(filePath, audioBuffer);
+    }
 
     // 6. Update VideoSegment in Prisma DB with exact audio file URL
     await prisma.videoSegment.update({
