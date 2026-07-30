@@ -75,12 +75,15 @@ const workflow = new StateGraph(StateAnnotation)
 
 export const documentaryGraph = workflow.compile();
 
+import { logToTaskFile } from '../utils/taskLogger';
+
 export async function executeDocumentaryWorkflow(input: {
   jobId: string;
   topic: string;
   targetDurationMinutes: number;
 }): Promise<GraphStateType> {
   console.log(`[Supervisor] Launching multi-agent workflow for Job ID: ${input.jobId}`);
+  logToTaskFile(input.jobId, `[Supervisor] Launching multi-agent workflow for Topic: "${input.topic}" (${input.targetDurationMinutes} mins)`);
 
   // Mark job as PLANNING in DB
   await prisma.videoJob.update({
@@ -104,6 +107,7 @@ export async function executeDocumentaryWorkflow(input: {
 
     if (finalState.error || finalState.workflowStatus === 'FAILED') {
       console.error(`[Supervisor] Workflow finished with error for Job ${input.jobId}:`, finalState.error);
+      logToTaskFile(input.jobId, `[Supervisor] Workflow FAILED: ${finalState.error}`);
       await prisma.videoJob.update({
         where: { id: input.jobId },
         data: {
@@ -113,6 +117,7 @@ export async function executeDocumentaryWorkflow(input: {
       });
     } else {
       console.log(`[Supervisor] Workflow successfully completed for Job ${input.jobId}.`);
+      logToTaskFile(input.jobId, `[Supervisor] Workflow COMPLETED successfully.`);
       await prisma.videoJob.update({
         where: { id: input.jobId },
         data: {
@@ -125,6 +130,7 @@ export async function executeDocumentaryWorkflow(input: {
   } catch (error) {
     const errorMessage = (error as Error).message;
     console.error(`[Supervisor] Unexpected error executing workflow for Job ${input.jobId}:`, error);
+    logToTaskFile(input.jobId, `[Supervisor] Unexpected error executing workflow: ${errorMessage}`);
     await prisma.videoJob.update({
       where: { id: input.jobId },
       data: {

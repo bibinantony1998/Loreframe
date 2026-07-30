@@ -28,13 +28,6 @@ export async function scriptWriterNode(state: GraphStateType): Promise<Partial<G
 
     // 2. Call Gemini model via Rate Limiter
     const modelName = config.geminiModel;
-    const apiKey = config.googleApiKey;
-
-    const model = new ChatGoogleGenerativeAI({
-      model: modelName,
-      apiKey: apiKey,
-      temperature: 0.7,
-    });
 
     const prompt = `You are a master historical documentary narrator and voiceover writer.
 Write a compelling, dramatic, human-sounding voiceover script for Chapter ${segment.sequenceIndex}: "${segment.title}".
@@ -51,8 +44,18 @@ Instructions:
 - Length: approximately 150-250 words.`;
 
     const response = await executeWithRateLimit(
-      () => model.invoke(prompt),
-      `ScriptWriter-${segment.sequenceIndex}`
+      async (apiKey) => {
+        const model = new ChatGoogleGenerativeAI({
+          model: modelName,
+          apiKey: apiKey,
+          temperature: 0.7,
+          maxRetries: 0,
+        });
+        return model.invoke(prompt);
+      },
+      `ScriptWriter-${segment.sequenceIndex}`,
+      state.jobId,
+      prompt
     );
 
     const fullScriptText = typeof response.content === 'string' ? response.content.trim() : JSON.stringify(response.content);

@@ -16,11 +16,7 @@ export const VIDEO_GENERATION_QUEUE_NAME = 'video-generation-queue';
 export const videoQueue = new Queue(VIDEO_GENERATION_QUEUE_NAME, {
   connection: redisConnection,
   defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 5000,
-    },
+    attempts: 1,
     removeOnComplete: 100,
     removeOnFail: 500,
   },

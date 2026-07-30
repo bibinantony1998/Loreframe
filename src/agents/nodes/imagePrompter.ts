@@ -28,13 +28,6 @@ export async function imagePrompterNode(state: GraphStateType): Promise<Partial<
 
     // 2. Call Gemini model via Rate Limiter
     const modelName = config.geminiModel;
-    const apiKey = config.googleApiKey;
-
-    const model = new ChatGoogleGenerativeAI({
-      model: modelName,
-      apiKey: apiKey,
-      temperature: 0.7,
-    });
 
     const prompt = `You are a master visual director and AI prompt engineer for high-end historical documentaries.
 Craft a highly detailed, cinematic image generation prompt for Chapter ${segment.sequenceIndex}: "${segment.title}".
@@ -50,8 +43,18 @@ Instructions:
 - Do NOT include markdown, commentary, or quotes. Output ONLY the raw image generation prompt string.`;
 
     const response = await executeWithRateLimit(
-      () => model.invoke(prompt),
-      `ImagePrompter-${segment.sequenceIndex}`
+      async (apiKey) => {
+        const model = new ChatGoogleGenerativeAI({
+          model: modelName,
+          apiKey: apiKey,
+          temperature: 0.7,
+          maxRetries: 0,
+        });
+        return model.invoke(prompt);
+      },
+      `ImagePrompter-${segment.sequenceIndex}`,
+      state.jobId,
+      prompt
     );
 
     const detailedPrompt = typeof response.content === 'string' ? response.content.trim() : JSON.stringify(response.content);
