@@ -1,8 +1,9 @@
 import { prisma } from '../../db/client';
-import { GraphStateType } from '../graphState';
+import { GraphStateType, safeGetChapters } from '../graphState';
 
 export async function dbPersistNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
-  console.log(`[DBPersist Node] Persisting ${state.chapters.length} chapters for Job ID: ${state.jobId}...`);
+  const chaptersArray = safeGetChapters(state.chapters);
+  console.log(`[DBPersist Node] Persisting ${chaptersArray.length} chapters for Job ID: ${state.jobId}...`);
 
   if (!state.jobId) {
     console.error('[DBPersist Node] Missing jobId in state.');
@@ -12,7 +13,7 @@ export async function dbPersistNode(state: GraphStateType): Promise<Partial<Grap
     };
   }
 
-  if (state.chapters.length === 0) {
+  if (chaptersArray.length === 0) {
     console.warn('[DBPersist Node] No chapters found to persist.');
     return {
       unprocessedSegmentIds: [],
@@ -27,7 +28,7 @@ export async function dbPersistNode(state: GraphStateType): Promise<Partial<Grap
     });
 
     // Create segments in batch / transaction
-    const segmentData = state.chapters.map((chapter) => ({
+    const segmentData = chaptersArray.map((chapter) => ({
       jobId: state.jobId,
       sequenceIndex: chapter.sequenceIndex,
       title: chapter.title,

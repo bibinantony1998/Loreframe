@@ -7,6 +7,25 @@ export interface Chapter {
   visualConcept: string;
 }
 
+export function safeGetChapters(chapters: unknown): Chapter[] {
+  if (Array.isArray(chapters)) {
+    return chapters as Chapter[];
+  }
+  if (typeof chapters === 'string') {
+    try {
+      const parsed = JSON.parse(chapters);
+      if (Array.isArray(parsed)) return parsed as Chapter[];
+      if (parsed && Array.isArray((parsed as any).chapters)) return (parsed as any).chapters as Chapter[];
+    } catch (e) {
+      // JSON parse error
+    }
+  }
+  if (chapters && typeof chapters === 'object' && Array.isArray((chapters as any).chapters)) {
+    return (chapters as any).chapters as Chapter[];
+  }
+  return [];
+}
+
 export const StateAnnotation = Annotation.Root({
   jobId: Annotation<string>({
     reducer: (_prev, next) => next,
@@ -21,7 +40,7 @@ export const StateAnnotation = Annotation.Root({
     default: () => 5,
   }),
   chapters: Annotation<Chapter[]>({
-    reducer: (_prev, next) => next,
+    reducer: (_prev, next) => safeGetChapters(next),
     default: () => [],
   }),
   unprocessedSegmentIds: Annotation<string[]>({

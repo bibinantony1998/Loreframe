@@ -1,4 +1,4 @@
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { createLLM } from '../../utils/llmFactory';
 import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
 import { executeWithRateLimit } from '../../utils/rateLimiter';
@@ -26,9 +26,7 @@ export async function imagePrompterNode(state: GraphStateType): Promise<Partial<
       throw new Error(`VideoSegment ${segmentId} not found in database.`);
     }
 
-    // 2. Call Gemini model via Rate Limiter
-    const modelName = config.geminiModel;
-
+    // 2. Call LLM via Factory & Rate Limiter
     const prompt = `You are a master visual director and AI prompt engineer for high-end historical documentaries.
 Craft a highly detailed, cinematic image generation prompt for Chapter ${segment.sequenceIndex}: "${segment.title}".
 
@@ -44,11 +42,10 @@ Instructions:
 
     const response = await executeWithRateLimit(
       async (apiKey) => {
-        const model = new ChatGoogleGenerativeAI({
-          model: modelName,
+        const model = createLLM({
+          requireJson: false,
           apiKey: apiKey,
           temperature: 0.7,
-          maxRetries: 0,
         });
         return model.invoke(prompt);
       },

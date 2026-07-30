@@ -3,6 +3,7 @@ import path from 'path';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from 'ffmpeg-static';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
+import sharp from 'sharp';
 import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
 
@@ -14,17 +15,44 @@ if (ffprobeInstaller && ffprobeInstaller.path) {
   ffmpeg.setFfprobePath(ffprobeInstaller.path);
 }
 
-// Helper to probe audio duration in seconds
+/**
+ * Ensures input image is a raster image (.png or .jpg).
+ * Converts legacy .svg files to .png using Sharp before passing to FFmpeg.
+ */
+async function ensureRasterImage(imagePath: string): Promise<string> {
+  if (!imagePath || !fs.existsSync(imagePath)) return imagePath;
+
+  if (imagePath.toLowerCase().endsWith('.svg')) {
+    const pngPath = imagePath.substring(0, imagePath.length - 4) + '.png';
+    try {
+      await sharp(imagePath).png().toFile(pngPath);
+      console.log(`[VideoAssembler] Rasterized legacy SVG image to PNG: ${pngPath}`);
+      return pngPath;
+    } catch (e) {
+      console.warn(`[VideoAssembler] Failed to rasterize SVG image ${imagePath}: ${(e as Error).message}`);
+    }
+  }
+
+  return imagePath;
+}
+
+// Helper to probe audio duration in seconds with strict existence & non-zero file validation
 function getAudioDuration(audioFilePath: string): Promise<number> {
   return new Promise((resolve) => {
-    if (!fs.existsSync(audioFilePath)) {
-      console.warn(`[VideoAssembler] Audio file not found at ${audioFilePath}. Defaulting duration to 5s.`);
+    if (!audioFilePath || !fs.existsSync(audioFilePath)) {
+      console.warn(`[VideoAssembler] Audio file missing at "${audioFilePath}".`);
+      return resolve(5.0);
+    }
+
+    const stat = fs.statSync(audioFilePath);
+    if (stat.size === 0) {
+      console.warn(`[VideoAssembler] Audio file at "${audioFilePath}" is 0 bytes. Defaulting to 5s.`);
       return resolve(5.0);
     }
 
     ffmpeg.ffprobe(audioFilePath, (err, metadata) => {
       if (err || !metadata || !metadata.format || !metadata.format.duration) {
-        console.warn(`[VideoAssembler] FFprobe error for ${audioFilePath}:`, err?.message);
+        console.warn(`[VideoAssembler] FFprobe warning for ${audioFilePath}:`, err?.message || 'Unknown probe error');
         return resolve(5.0);
       }
       const duration = Math.max(metadata.format.duration, 2.0);
@@ -41,33 +69,42 @@ function renderSegmentClip(
   duration: number
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    // Check file existence before FFmpeg execution
+    if (imagePath && !fs.existsSync(imagePath)) {
+      console.warn(`[VideoAssembler] Missing image input file: ${imagePath}. Using color canvas fallback.`);
+    }
+
+    if (audioPath && !fs.existsSync(audioPath)) {
+      console.warn(`[VideoAssembler] Missing audio input file: ${audioPath}. Using silent audio fallback.`);
+    }
+
     // Zoompan filter: slow Ken Burns zoom in over duration
     const frames = Math.ceil(duration * 25);
     const filterStr = `scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,zoompan=z='min(zoom+0.001,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=1920x1080,format=yuv420p`;
 
     const command = ffmpeg();
 
-    if (fs.existsSync(imagePath)) {
+    if (imagePath && fs.existsSync(imagePath) && fs.statSync(imagePath).size > 0) {
       command.input(imagePath).loop(duration);
     } else {
-      // Fallback color canvas if image is missing
+      // Fallback color canvas if image is missing or empty
       command.input('color=c=0x0f172a:s=1920x1080').inputFormat('lavfi').duration(duration);
     }
 
-    if (fs.existsSync(audioPath)) {
+    if (audioPath && fs.existsSync(audioPath) && fs.statSync(audioPath).size > 0) {
       command.input(audioPath);
     } else {
-      command.input('anullsrc=r=44100:cl=stereo').inputFormat('lavfi').duration(duration);
+      command.input('anullsrc=r=24000:cl=stereo').inputFormat('lavfi').duration(duration);
     }
 
     command
       .videoFilters(filterStr)
       .outputOptions([
         '-c:v libx264',
-        '-tune stillimage',
+        '-pix_fmt yuv420p',   // CRITICAL for macOS QuickTime compatibility
         '-c:a aac',
-        '-b:a 192k',
-        '-pix_fmt yuv420p',
+        '-b:a 128k',
+        '-ar 24000',          // CRITICAL: Match Kokoro native 24kHz sample rate to prevent distortion
         '-shortest',
       ])
       .output(outputPath)
@@ -88,6 +125,12 @@ function concatenateClips(clipPaths: string[], finalOutputPath: string): Promise
   return new Promise((resolve, reject) => {
     if (clipPaths.length === 0) {
       return reject(new Error('No video clips available for concatenation'));
+    }
+
+    for (const clip of clipPaths) {
+      if (!fs.existsSync(clip)) {
+        return reject(new Error(`Missing input file for FFmpeg concatenation: ${clip}`));
+      }
     }
 
     if (clipPaths.length === 1) {
@@ -143,7 +186,7 @@ export async function videoAssemblerNode(state: GraphStateType): Promise<Partial
     const finalVideoPath = path.join(videosDir, finalFilename);
     const relativeVideoUrl = `/public/videos/${finalFilename}`;
 
-    // Update job status in DB to RENDERING
+    // Update job status in DB to ASSET_GENERATION
     await prisma.videoJob.update({
       where: { id: state.jobId },
       data: { status: 'ASSET_GENERATION' },
@@ -159,10 +202,19 @@ export async function videoAssemblerNode(state: GraphStateType): Promise<Partial
         ? path.join(process.cwd(), segment.imageUrl.replace(/^\//, ''))
         : '';
 
+      // Validate inputs if explicitly supplied
+      if (segment.audioUrl && !fs.existsSync(audioAbsPath)) {
+        throw new Error(`Missing input file for FFmpeg: ${audioAbsPath}`);
+      }
+      if (segment.imageUrl && !fs.existsSync(imageAbsPath)) {
+        throw new Error(`Missing input file for FFmpeg: ${imageAbsPath}`);
+      }
+
       const duration = await getAudioDuration(audioAbsPath);
       const clipPath = path.join(videosDir, `clip_${segment.id}.mp4`);
 
-      await renderSegmentClip(imageAbsPath, audioAbsPath, clipPath, duration);
+      const rasterImagePath = await ensureRasterImage(imageAbsPath);
+      await renderSegmentClip(rasterImagePath, audioAbsPath, clipPath, duration);
       clipPaths.push(clipPath);
     }
 
@@ -170,12 +222,44 @@ export async function videoAssemblerNode(state: GraphStateType): Promise<Partial
     console.log(`[VideoAssembler] Concatenating ${clipPaths.length} segment clips into ${finalVideoPath}...`);
     await concatenateClips(clipPaths, finalVideoPath);
 
-    // Clean up intermediate clip files
-    clipPaths.forEach((cp) => {
-      if (fs.existsSync(cp)) fs.unlinkSync(cp);
-    });
+    // 5. Garbage collection: Clean up intermediate clip, audio, and image files
+    console.log(`[VideoAssembler] Cleaning up temporary intermediate asset files for Job ${state.jobId}...`);
 
-    // 5. Finalize Job status in database
+    for (const cp of clipPaths) {
+      try {
+        if (fs.existsSync(cp)) await fs.promises.unlink(cp);
+      } catch (e) {
+        console.warn(`[VideoAssembler] Warning deleting clip file ${cp}: ${(e as Error).message}`);
+      }
+    }
+
+    for (const segment of segments) {
+      if (segment.audioUrl) {
+        const audioAbsPath = path.join(process.cwd(), segment.audioUrl.replace(/^\//, ''));
+        try {
+          if (fs.existsSync(audioAbsPath)) {
+            await fs.promises.unlink(audioAbsPath);
+            console.log(`[VideoAssembler] Cleaned up temporary audio: ${audioAbsPath}`);
+          }
+        } catch (e) {
+          console.warn(`[VideoAssembler] Warning deleting temporary audio ${audioAbsPath}: ${(e as Error).message}`);
+        }
+      }
+
+      if (segment.imageUrl) {
+        const imageAbsPath = path.join(process.cwd(), segment.imageUrl.replace(/^\//, ''));
+        try {
+          if (fs.existsSync(imageAbsPath)) {
+            await fs.promises.unlink(imageAbsPath);
+            console.log(`[VideoAssembler] Cleaned up temporary image: ${imageAbsPath}`);
+          }
+        } catch (e) {
+          console.warn(`[VideoAssembler] Warning deleting temporary image ${imageAbsPath}: ${(e as Error).message}`);
+        }
+      }
+    }
+
+    // 6. Finalize Job status in database
     await prisma.videoJob.update({
       where: { id: state.jobId },
       data: {

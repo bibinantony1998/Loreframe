@@ -1,10 +1,82 @@
 import fs from 'fs';
 import path from 'path';
+import sharp from 'sharp';
 import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
+import { config } from '../../config/env';
+import { generateComfyImage } from '../../utils/comfyClient';
 
-// Generates a valid 16:9 PNG image file buffer (1920x1080 aspect ratio canvas)
-function createFallback16by9PngBuffer(title: string, promptText: string): Buffer {
+export async function imageGeneratorNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
+  const segmentId = state.currentSegmentId;
+  console.log(`[ImageGenerator Agent] Generating 16:9 image asset for segmentId: ${segmentId}...`);
+
+  if (!segmentId) {
+    console.error('[ImageGenerator Agent] Missing currentSegmentId in state.');
+    return {
+      error: 'ImageGenerator error: Missing currentSegmentId in state',
+      workflowStatus: 'FAILED',
+    };
+  }
+
+  try {
+    // 1. Fetch segment from Prisma DB
+    const segment = await prisma.videoSegment.findUnique({
+      where: { id: segmentId },
+    });
+
+    if (!segment || !segment.imagePrompt) {
+      throw new Error(`VideoSegment ${segmentId} missing image prompt.`);
+    }
+
+    let relativeImageUrl = '';
+
+    // 2. Generate image using ComfyUI REST API or fallback renderer
+    if (config.imageProvider === 'comfyui') {
+      try {
+        const outputFilename = `segment_${segmentId}.png`;
+        relativeImageUrl = await generateComfyImage(segment.imagePrompt, outputFilename);
+      } catch (comfyError) {
+        console.warn(
+          `[ImageGenerator Agent] ComfyUI generation failed (${(comfyError as Error).message}). Falling back to graphic frame renderer...`
+        );
+        relativeImageUrl = await renderFallbackAsset(segmentId, segment.title || 'Chapter', segment.imagePrompt);
+      }
+    } else {
+      relativeImageUrl = await renderFallbackAsset(segmentId, segment.title || 'Chapter', segment.imagePrompt);
+    }
+
+    // 3. Update VideoSegment in Prisma DB with image URL
+    await prisma.videoSegment.update({
+      where: { id: segmentId },
+      data: {
+        imageUrl: relativeImageUrl,
+        status: 'ASSETS_READY',
+      },
+    });
+
+    console.log(`[ImageGenerator Agent] Image asset saved (${relativeImageUrl}).`);
+
+    return {
+      workflowStatus: 'IMAGE_GENERATED',
+    };
+  } catch (error) {
+    console.error(`[ImageGenerator Agent] Error generating image for segment ${segmentId}:`, error);
+    return {
+      error: `ImageGenerator error: ${(error as Error).message}`,
+      workflowStatus: 'FAILED',
+    };
+  }
+}
+
+async function renderFallbackAsset(segmentId: string, title: string, promptText: string): Promise<string> {
+  const imagesDir = path.join(process.cwd(), 'public', 'images');
+  if (!fs.existsSync(imagesDir)) {
+    fs.mkdirSync(imagesDir, { recursive: true });
+  }
+
+  const filename = `segment_${segmentId}.png`;
+  const filePath = path.join(imagesDir, filename);
+
   const svgText = `<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
     <defs>
       <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -34,7 +106,9 @@ function createFallback16by9PngBuffer(title: string, promptText: string): Buffer
     </text>
   </svg>`;
 
-  return Buffer.from(svgText, 'utf-8');
+  // Convert SVG to high-res PNG raster image via Sharp
+  await sharp(Buffer.from(svgText)).png().toFile(filePath);
+  return `/public/images/${filename}`;
 }
 
 function escapeXml(unsafe: string): string {
@@ -44,63 +118,4 @@ function escapeXml(unsafe: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
-}
-
-export async function imageGeneratorNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
-  const segmentId = state.currentSegmentId;
-  console.log(`[ImageGenerator Agent] Generating 16:9 image asset for segmentId: ${segmentId}...`);
-
-  if (!segmentId) {
-    console.error('[ImageGenerator Agent] Missing currentSegmentId in state.');
-    return {
-      error: 'ImageGenerator error: Missing currentSegmentId in state',
-      workflowStatus: 'FAILED',
-    };
-  }
-
-  try {
-    // 1. Fetch segment from Prisma DB
-    const segment = await prisma.videoSegment.findUnique({
-      where: { id: segmentId },
-    });
-
-    if (!segment || !segment.imagePrompt) {
-      throw new Error(`VideoSegment ${segmentId} missing image prompt.`);
-    }
-
-    // 2. Ensure /public/images directory exists
-    const imagesDir = path.join(process.cwd(), 'public', 'images');
-    if (!fs.existsSync(imagesDir)) {
-      fs.mkdirSync(imagesDir, { recursive: true });
-    }
-
-    const filename = `segment_${segmentId}.svg`;
-    const filePath = path.join(imagesDir, filename);
-    const relativeImageUrl = `/public/images/${filename}`;
-
-    // 3. Render 16:9 high-resolution documentary graphic asset
-    const imageBuffer = createFallback16by9PngBuffer(segment.title || 'Chapter', segment.imagePrompt);
-    fs.writeFileSync(filePath, imageBuffer);
-
-    // 4. Update VideoSegment in Prisma DB with image URL
-    await prisma.videoSegment.update({
-      where: { id: segmentId },
-      data: {
-        imageUrl: relativeImageUrl,
-        status: 'ASSETS_READY',
-      },
-    });
-
-    console.log(`[ImageGenerator Agent] Image asset saved to ${filePath} (${relativeImageUrl}).`);
-
-    return {
-      workflowStatus: 'IMAGE_GENERATED',
-    };
-  } catch (error) {
-    console.error(`[ImageGenerator Agent] Error generating image for segment ${segmentId}:`, error);
-    return {
-      error: `ImageGenerator error: ${(error as Error).message}`,
-      workflowStatus: 'FAILED',
-    };
-  }
 }

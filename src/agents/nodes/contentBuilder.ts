@@ -1,6 +1,6 @@
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { createLLM } from '../../utils/llmFactory';
 import { z } from 'zod';
-import { GraphStateType } from '../graphState';
+import { GraphStateType, safeGetChapters } from '../graphState';
 import { executeWithRateLimit } from '../../utils/rateLimiter';
 import { config } from '../../config/env';
 
@@ -20,8 +20,6 @@ export type DocumentOutline = z.infer<typeof DocumentOutlineSchema>;
 export async function contentBuilderNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
   console.log(`[ContentBuilder Agent] Generating lightweight historical outline for: "${state.topic}" (${state.targetDurationMinutes} mins)...`);
 
-  const modelName = config.geminiModel;
-
   const prompt = `You are a documentary producer creating a high-level chapter outline.
 Topic: "${state.topic}"
 Target Duration: ${state.targetDurationMinutes} minutes.
@@ -38,12 +36,11 @@ Instructions:
   try {
     const result = await executeWithRateLimit(
       async (apiKey) => {
-        const model = new ChatGoogleGenerativeAI({
-          model: modelName,
+        const model = createLLM({
+          requireJson: true,
           apiKey: apiKey,
           temperature: 0.5,
           maxOutputTokens: 1000,
-          maxRetries: 0,
         });
         const structuredLlm = model.withStructuredOutput(DocumentOutlineSchema);
         return structuredLlm.invoke(prompt);
@@ -53,9 +50,11 @@ Instructions:
       prompt
     );
 
-    console.log(`[ContentBuilder Agent] Successfully generated ${result.chapters.length} chapters.`);
+    const safeChapters = safeGetChapters(result?.chapters);
+    console.log(`[ContentBuilder Agent] Successfully generated ${safeChapters.length} chapters.`);
+
     return {
-      chapters: result.chapters,
+      chapters: safeChapters,
       workflowStatus: 'OUTLINE_GENERATED',
     };
   } catch (error) {

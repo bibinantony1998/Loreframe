@@ -103,7 +103,10 @@ export async function executeDocumentaryWorkflow(input: {
   };
 
   try {
-    const finalState = (await documentaryGraph.invoke(initialState)) as GraphStateType;
+    const finalState = (await documentaryGraph.invoke(
+      initialState,
+      { recursionLimit: 150 }
+    )) as GraphStateType;
 
     if (finalState.error || finalState.workflowStatus === 'FAILED') {
       console.error(`[Supervisor] Workflow finished with error for Job ${input.jobId}:`, finalState.error);

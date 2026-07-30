@@ -19,6 +19,23 @@ export const config = {
   googleApiKeys: googleApiKeys.length > 0 ? googleApiKeys : [''],
   geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-pro',
   
+  // LLM Provider Selection: "gemini" | "ollama"
+  llmProvider: (process.env.LLM_PROVIDER || 'gemini').toLowerCase() as 'gemini' | 'ollama',
+  
+  // Ollama Configuration
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
+  ollamaModelName: process.env.OLLAMA_MODEL_NAME || 'llama3.1:8b',
+  ollamaJsonModelName: process.env.OLLAMA_JSON_MODEL_NAME || 'llama3.1:8b',
+  
+  // Image Provider Configuration: "comfyui" | "gemini"
+  imageProvider: (process.env.IMAGE_PROVIDER || 'comfyui').toLowerCase() as 'comfyui' | 'gemini',
+  comfyuiBaseUrl: process.env.COMFYUI_BASE_URL || 'http://localhost:8188',
+  
+  // TTS Provider Configuration: "kokoro" | "gcp"
+  ttsProvider: (process.env.TTS_PROVIDER || 'kokoro').toLowerCase() as 'kokoro' | 'gcp',
+  kokoroBaseUrl: process.env.KOKORO_BASE_URL || 'http://localhost:8880/v1/audio/speech',
+  kokoroVoice: process.env.KOKORO_VOICE || 'am_adam',
+  
   // Rate Limiting & Cooldown Configuration
   llmBatchSize: parseInt(process.env.LLM_BATCH_SIZE || '5', 10),
   llmCooldownMs: parseInt(process.env.LLM_COOLDOWN_MS || '15000', 10),
