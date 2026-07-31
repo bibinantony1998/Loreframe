@@ -1,5 +1,6 @@
 import { StateGraph, START, END } from '@langchain/langgraph';
 import { StateAnnotation, GraphStateType } from './graphState';
+import { researchNode } from './nodes/research';
 import { contentBuilderNode } from './nodes/contentBuilder';
 import { dbPersistNode } from './nodes/dbPersist';
 import { scriptWriterNode } from './nodes/scriptWriter';
@@ -30,6 +31,13 @@ export function supervisorLoopNode(state: GraphStateType): Partial<GraphStateTyp
   };
 }
 
+function routeAfterResearch(state: GraphStateType): string {
+  if (state.error || state.workflowStatus === 'FAILED') {
+    return END;
+  }
+  return 'contentBuilder';
+}
+
 function routeAfterContentBuilder(state: GraphStateType): string {
   if (state.error || state.workflowStatus === 'FAILED') {
     return END;
@@ -48,6 +56,7 @@ function routeAfterSupervisorLoop(state: GraphStateType): string {
 }
 
 const workflow = new StateGraph(StateAnnotation)
+  .addNode('research', researchNode)
   .addNode('contentBuilder', contentBuilderNode)
   .addNode('dbPersist', dbPersistNode)
   .addNode('supervisorLoop', supervisorLoopNode)
@@ -56,7 +65,11 @@ const workflow = new StateGraph(StateAnnotation)
   .addNode('imagePrompter', imagePrompterNode)
   .addNode('imageGenerator', imageGeneratorNode)
   .addNode('videoAssembler', videoAssemblerNode)
-  .addEdge(START, 'contentBuilder')
+  .addEdge(START, 'research')
+  .addConditionalEdges('research', routeAfterResearch, {
+    contentBuilder: 'contentBuilder',
+    [END]: END,
+  })
   .addConditionalEdges('contentBuilder', routeAfterContentBuilder, {
     dbPersist: 'dbPersist',
     [END]: END,
@@ -95,6 +108,7 @@ export async function executeDocumentaryWorkflow(input: {
     jobId: input.jobId,
     topic: input.topic,
     targetDurationMinutes: input.targetDurationMinutes,
+    researchData: '',
     chapters: [],
     unprocessedSegmentIds: [],
     currentSegmentId: null,

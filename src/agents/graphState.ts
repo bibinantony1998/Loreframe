@@ -39,6 +39,10 @@ export const StateAnnotation = Annotation.Root({
     reducer: (_prev, next) => next,
     default: () => 5,
   }),
+  researchData: Annotation<string>({
+    reducer: (_prev, next) => next,
+    default: () => '',
+  }),
   chapters: Annotation<Chapter[]>({
     reducer: (_prev, next) => safeGetChapters(next),
     default: () => [],

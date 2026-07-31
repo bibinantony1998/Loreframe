@@ -7,6 +7,7 @@ import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
 import { config } from '../../config/env';
 import { getShutdownSignal, isShuttingDown } from '../../utils/shutdownManager';
+import { broadcastAgentStatus } from '../../utils/wsBroadcaster';
 
 // Set static FFmpeg binary path for audio normalization
 if (ffmpegInstaller) {
@@ -156,6 +157,16 @@ export async function textToAudioNode(state: GraphStateType): Promise<Partial<Gr
     if (!segment || !segment.narrationScript) {
       throw new Error(`VideoSegment ${segmentId} missing narration script text.`);
     }
+
+    broadcastAgentStatus({
+      jobId: state.jobId,
+      activeAgent: 'TTSAgent',
+      currentTask: `Synthesizing audio narration for Chapter ${segment.sequenceIndex}: "${segment.title || ''}"`,
+      chapterIndex: segment.sequenceIndex,
+      totalChapters: state.chapters.length || 5,
+      progressPercentage: Math.min(45 + segment.sequenceIndex * 5, 65),
+      status: 'running',
+    });
 
     // 2. Ensure /public/audio directory exists
     const audioDir = path.join(process.cwd(), 'public', 'audio');
@@ -307,6 +318,19 @@ export async function textToAudioNode(state: GraphStateType): Promise<Partial<Gr
     });
 
     console.log(`[TextToAudio Agent] Audio file saved to ${filePath} and updated in DB (${relativeAudioUrl}).`);
+
+    broadcastAgentStatus({
+      jobId: state.jobId,
+      activeAgent: 'TTSAgent',
+      currentTask: `Audio narration generated for Chapter ${segment.sequenceIndex}: "${segment.title || ''}"`,
+      chapterIndex: segment.sequenceIndex,
+      totalChapters: state.chapters.length || 5,
+      progressPercentage: Math.min(50 + segment.sequenceIndex * 5, 70),
+      status: 'completed',
+      assetUrl: relativeAudioUrl,
+      assetType: 'audio',
+      logMessage: `Voiceover narration synthesized and stored at ${relativeAudioUrl}`,
+    });
 
     return {
       workflowStatus: 'AUDIO_GENERATED',

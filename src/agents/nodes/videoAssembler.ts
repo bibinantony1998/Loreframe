@@ -6,6 +6,7 @@ import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import sharp from 'sharp';
 import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
+import { broadcastAgentStatus } from '../../utils/wsBroadcaster';
 
 // Set static FFmpeg & FFprobe binary paths
 if (ffmpegInstaller) {
@@ -224,6 +225,14 @@ export async function videoAssemblerNode(state: GraphStateType): Promise<Partial
     };
   }
 
+  broadcastAgentStatus({
+    jobId: state.jobId,
+    activeAgent: 'VideoAssemblerAgent',
+    currentTask: 'Rendering and concatenating multi-scene visual clips and continuous audio...',
+    progressPercentage: 90,
+    status: 'running',
+  });
+
   try {
     // 1. Fetch segments from DB ordered by sequenceIndex
     const segments = await prisma.videoSegment.findMany({
@@ -378,6 +387,17 @@ export async function videoAssemblerNode(state: GraphStateType): Promise<Partial
     });
 
     console.log(`[VideoAssembler] Final documentary video ready at: ${relativeVideoUrl}`);
+
+    broadcastAgentStatus({
+      jobId: state.jobId,
+      activeAgent: 'VideoAssemblerAgent',
+      currentTask: 'Documentary video assembly completed successfully!',
+      progressPercentage: 100,
+      status: 'completed',
+      assetUrl: relativeVideoUrl,
+      assetType: 'video',
+      logMessage: `Final documentary video assembled and exported at ${relativeVideoUrl}`,
+    });
 
     return {
       workflowStatus: 'COMPLETED',

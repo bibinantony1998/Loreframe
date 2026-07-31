@@ -1,8 +1,30 @@
+import fs from 'fs';
+import path from 'path';
+import ffmpeg from 'fluent-ffmpeg';
+import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import { createLLM } from '../../utils/llmFactory';
 import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
 import { executeWithRateLimit } from '../../utils/rateLimiter';
-import { config } from '../../config/env';
+import { broadcastAgentStatus } from '../../utils/wsBroadcaster';
+
+if (ffprobeInstaller && ffprobeInstaller.path) {
+  ffmpeg.setFfprobePath(ffprobeInstaller.path);
+}
+
+function probeAudioDuration(audioPath: string): Promise<number> {
+  return new Promise((resolve) => {
+    if (!audioPath || !fs.existsSync(audioPath) || fs.statSync(audioPath).size === 0) {
+      return resolve(0);
+    }
+    ffmpeg.ffprobe(audioPath, (err, metadata) => {
+      if (err || !metadata || !metadata.format || !metadata.format.duration) {
+        return resolve(0);
+      }
+      resolve(metadata.format.duration);
+    });
+  });
+}
 
 const MANDATORY_STYLE_SUFFIX =
   ', highly detailed cinematic documentary illustration, historical art style, watercolor and ink, wide-angle aerial perspective, intricate detail, muted earth tones, parchment texture, masterpiece, 8k';
@@ -29,30 +51,54 @@ export async function imagePrompterNode(state: GraphStateType): Promise<Partial<
       throw new Error(`VideoSegment ${segmentId} not found in database.`);
     }
 
-    const narrationText = (segment.narrationScript || '').trim();
-    const fallbackBase = narrationText.length > 20
-      ? narrationText.slice(0, 150)
-      : `Historical documentary scene for Chapter ${segment.sequenceIndex}: ${segment.title || state.topic}`;
+    broadcastAgentStatus({
+      jobId: state.jobId,
+      activeAgent: 'ImagePrompterAgent',
+      currentTask: `Crafting scene prompts for Chapter ${segment.sequenceIndex}: "${segment.title || ''}"`,
+      chapterIndex: segment.sequenceIndex,
+      totalChapters: state.chapters.length || 5,
+      progressPercentage: Math.min(55 + segment.sequenceIndex * 5, 75),
+      status: 'running',
+    });
 
-    // 2. Call LLM via Factory & Rate Limiter to produce 3-4 distinct scene prompts
+    const narrationText = (segment.narrationScript || '').trim();
+
+    // 2. Probe exact audio duration to dynamically scale image count (1 image per 30s)
+    const audioAbsPath = segment.audioUrl
+      ? path.join(process.cwd(), segment.audioUrl.replace(/^\//, ''))
+      : '';
+
+    let durationSec = await probeAudioDuration(audioAbsPath);
+
+    if (durationSec <= 0 && narrationText) {
+      const wordCount = narrationText.split(/\s+/).filter(Boolean).length;
+      durationSec = Math.max(wordCount / 2.5, 10.0);
+    }
+
+    // Rule: 1 image per 30 seconds of audio (minimum 1 image)
+    const requiredImageCount = Math.max(1, Math.ceil(durationSec / 30));
+
+    console.log(
+      `[ImagePrompter Agent] Chapter ${segment.sequenceIndex} audio duration: ${durationSec.toFixed(1)}s -> Scaling to ${requiredImageCount} scene image prompt(s) (1 per 30s)...`
+    );
+
+    // 3. Call LLM via Factory & Rate Limiter to produce requiredImageCount distinct scene prompts
     const prompt = `You are a master visual director and AI prompt engineer for high-end historical documentaries.
-Craft an array of 3 to 4 distinct, highly detailed, illustrative visual prompts for Chapter ${segment.sequenceIndex}: "${segment.title || state.topic}".
+Craft an array of exactly ${requiredImageCount} distinct, highly detailed, illustrative visual prompts for Chapter ${segment.sequenceIndex}: "${segment.title || state.topic}".
 
 Documentary Topic: "${state.topic}"
 Chapter Title: "${segment.title || ''}"
 Voiceover Narration Script: "${narrationText}"
 
 Instructions:
-- Return a JSON object with a "prompts" key containing an array of 3 to 4 distinct prompt strings.
-- Each prompt must describe a specific visual scene (e.g. Scene 1: architecture/palaces, Scene 2: military legions/battles, Scene 3: rulers/aristocrats, Scene 4: landscapes/events).
+- Return a JSON object with a "prompts" key containing an array of EXACTLY ${requiredImageCount} distinct prompt strings.
+- Each prompt must capture a sequential scene in this chapter's narration.
 - Describe the visual composition, subjects, setting, lighting, and mood clearly in text.
 - Output JSON format strictly:
 {
   "prompts": [
     "Wide-angle illustrative scene depicting...",
-    "Detailed historical painting showing...",
-    "Cinematic documentary artwork of...",
-    "Atmospheric composition portraying..."
+    "Detailed historical painting showing..."
   ]
 }`;
 
@@ -85,18 +131,23 @@ Instructions:
       }
     } catch (parseErr) {
       console.warn(`[ImagePrompter Agent] Prompt generation/parsing fallback: ${(parseErr as Error).message}`);
-      promptsArray = [
-        `Cinematic documentary illustration of ${segment.title || state.topic}`,
-        `Wide-angle historical artwork depicting ${state.topic}`,
-        `Detailed documentary scene showing ${segment.title || state.topic}`,
-      ];
+      for (let k = 0; k < requiredImageCount; k++) {
+        promptsArray.push(`Cinematic documentary illustration of ${segment.title || state.topic} (Scene ${k + 1})`);
+      }
     }
 
     if (promptsArray.length === 0) {
-      promptsArray = [`Cinematic documentary illustration of ${segment.title || state.topic}`];
+      for (let k = 0; k < requiredImageCount; k++) {
+        promptsArray.push(`Cinematic documentary illustration of ${segment.title || state.topic} (Scene ${k + 1})`);
+      }
     }
 
-    // 3. Force-append mandatory artistic style suffix & guarantee no [object Object]
+    // Ensure prompt array count matches requiredImageCount
+    if (promptsArray.length > requiredImageCount) {
+      promptsArray = promptsArray.slice(0, requiredImageCount);
+    }
+
+    // 4. Force-append mandatory artistic style suffix
     const finalPrompts = promptsArray.map((p) => {
       const cleanP = extractStringFromPrompt(p);
       const trimmed = cleanP.trim();
@@ -106,7 +157,7 @@ Instructions:
 
     const jsonPromptsString = JSON.stringify(finalPrompts);
 
-    // 4. Update VideoSegment in Prisma DB
+    // 5. Update VideoSegment in Prisma DB
     await prisma.videoSegment.update({
       where: { id: segmentId },
       data: {
@@ -115,7 +166,7 @@ Instructions:
     });
 
     console.log(
-      `[ImagePrompter Agent] Created ${finalPrompts.length} documentary illustration prompt(s) for segment ${segmentId}. Sample: "${finalPrompts[0].slice(0, 80)}..."`
+      `[ImagePrompter Agent] Saved ${finalPrompts.length} dynamic scene prompt(s) for segment ${segmentId}. Sample: "${finalPrompts[0].slice(0, 80)}..."`
     );
 
     return {

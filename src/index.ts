@@ -32,6 +32,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 import { prisma } from './db/client';
 import { triggerShutdown } from './utils/shutdownManager';
 import { closeQueueAndRedis } from './queue/index';
+import { initWebSocketServer, closeWebSocketServer } from './utils/wsBroadcaster';
 
 // Initialize BullMQ Worker
 const worker = initVideoWorker();
@@ -42,6 +43,9 @@ const server = app.listen(port, () => {
   console.log(`[Server] Generate API available at POST http://localhost:${port}/api/generate`);
   console.log(`[Server] Static files served at http://localhost:${port}/public/`);
 });
+
+// Initialize WebSocket server for real-time status broadcasting
+initWebSocketServer(server);
 
 let isShuttingDownProcess = false;
 
@@ -59,6 +63,7 @@ async function gracefulShutdown(signal: string) {
 
   // 1. Abort active fetch calls & background loops
   triggerShutdown();
+  closeWebSocketServer();
 
   // 2. Stop accepting new HTTP requests
   server.close(() => {

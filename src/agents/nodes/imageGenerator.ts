@@ -5,6 +5,7 @@ import { prisma } from '../../db/client';
 import { GraphStateType } from '../graphState';
 import { config } from '../../config/env';
 import { generateComfyImage } from '../../utils/comfyClient';
+import { broadcastAgentStatus } from '../../utils/wsBroadcaster';
 
 export async function imageGeneratorNode(state: GraphStateType): Promise<Partial<GraphStateType>> {
   const segmentId = state.currentSegmentId;
@@ -27,6 +28,16 @@ export async function imageGeneratorNode(state: GraphStateType): Promise<Partial
     if (!segment || !segment.imagePrompt) {
       throw new Error(`VideoSegment ${segmentId} missing image prompt.`);
     }
+
+    broadcastAgentStatus({
+      jobId: state.jobId,
+      activeAgent: 'ImageGeneratorAgent',
+      currentTask: `Generating scene images via ComfyUI for Chapter ${segment.sequenceIndex}: "${segment.title || ''}"`,
+      chapterIndex: segment.sequenceIndex,
+      totalChapters: state.chapters.length || 5,
+      progressPercentage: Math.min(65 + segment.sequenceIndex * 5, 85),
+      status: 'running',
+    });
 
     // 2. Parse image prompts array or single prompt
     let prompts: string[] = [];
@@ -79,6 +90,20 @@ export async function imageGeneratorNode(state: GraphStateType): Promise<Partial
     });
 
     console.log(`[ImageGenerator Agent] Saved ${imagePaths.length} image asset(s) for segment ${segmentId}.`);
+
+    const firstImageUrl = imagePaths[0] || '';
+    broadcastAgentStatus({
+      jobId: state.jobId,
+      activeAgent: 'ImageGeneratorAgent',
+      currentTask: `Generated ${imagePaths.length} 16:9 scene visual(s) for Chapter ${segment.sequenceIndex}: "${segment.title || ''}"`,
+      chapterIndex: segment.sequenceIndex,
+      totalChapters: state.chapters.length || 5,
+      progressPercentage: Math.min(70 + segment.sequenceIndex * 5, 88),
+      status: 'completed',
+      assetUrl: firstImageUrl,
+      assetType: 'image',
+      logMessage: `Rendered ${imagePaths.length} scene asset(s) stored at ${firstImageUrl}`,
+    });
 
     return {
       workflowStatus: 'IMAGE_GENERATED',
