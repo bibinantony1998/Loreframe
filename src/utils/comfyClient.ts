@@ -4,7 +4,46 @@ import { config } from '../config/env';
 import { sleep } from './rateLimiter';
 import { getShutdownSignal, isShuttingDown } from './shutdownManager';
 
+let isGenerating = false;
+const lockQueue: Array<() => void> = [];
+
+/**
+ * Mutex lock to ensure single-threaded sequential execution of ComfyUI generation tasks,
+ * preventing queue spamming or resource contention on local GPU hardware.
+ */
+function acquireComfyLock(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const release = () => {
+      const next = lockQueue.shift();
+      if (next) {
+        next();
+      } else {
+        isGenerating = false;
+      }
+    };
+
+    if (!isGenerating) {
+      isGenerating = true;
+      resolve(release);
+    } else {
+      lockQueue.push(() => resolve(release));
+    }
+  });
+}
+
 export async function generateComfyImage(
+  promptText: string,
+  outputFilename: string
+): Promise<string> {
+  const unlock = await acquireComfyLock();
+  try {
+    return await executeComfyGeneration(promptText, outputFilename);
+  } finally {
+    unlock();
+  }
+}
+
+async function executeComfyGeneration(
   promptText: string,
   outputFilename: string
 ): Promise<string> {
@@ -73,7 +112,7 @@ export async function generateComfyImage(
     }
   }
 
-  // 3. Queue prompt to ComfyUI REST API
+  // 3. Queue prompt payload to ComfyUI REST API
   const promptEndpoint = `${comfyUrl}/prompt`;
   let response: Response;
 
@@ -108,18 +147,20 @@ export async function generateComfyImage(
     throw new Error(`ComfyUI /prompt response missing prompt_id.`);
   }
 
-  console.log(`[ComfyUI Client] Queued prompt with prompt_id: ${promptId}. Polling execution status...`);
+  console.log(`[ComfyUI Client] Queued prompt_id: ${promptId}. Polling /history/${promptId} every 5 seconds...`);
 
-  // 4. Poll /history/:prompt_id until completed (max 120s)
+  // 4. Indefinite Asynchronous History Polling Loop (every 5 seconds)
   const historyUrl = `${comfyUrl}/history/${promptId}`;
-  const maxAttempts = 60;
   let outputImageMeta: { filename: string; subfolder: string; type: string } | null = null;
+  let pollCount = 0;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  while (true) {
     if (isShuttingDown()) {
       throw new Error('ComfyUI generation cancelled: Server process is shutting down.');
     }
-    await sleep(2000);
+
+    await sleep(5000);
+    pollCount++;
 
     try {
       const historyRes = await fetch(historyUrl, { signal: getShutdownSignal() });
@@ -139,30 +180,31 @@ export async function generateComfyImage(
 
           if (outputImageMeta) {
             console.log(
-              `[ComfyUI Client] Generation completed! Output image: ${outputImageMeta.filename}`
+              `[ComfyUI Client] Generation finished in ~${pollCount * 5}s! Output asset: ${outputImageMeta.filename}`
             );
             break;
           }
         }
       }
     } catch (e) {
-      // transient network error during polling, continue loop
+      if (isShuttingDown()) throw e;
+      // Transient error during polling; remain in loop
     }
   }
 
   if (!outputImageMeta) {
-    throw new Error(`ComfyUI execution timed out or produced no output image for prompt_id: ${promptId}`);
+    throw new Error(`ComfyUI execution produced no output image for prompt_id: ${promptId}`);
   }
 
-  // 5. Download resulting image from /view
+  // 5. Download resulting image from /view endpoint
   const viewUrl = `${comfyUrl}/view?filename=${encodeURIComponent(
     outputImageMeta.filename
   )}&subfolder=${encodeURIComponent(
     outputImageMeta.subfolder || ''
   )}&type=${encodeURIComponent(outputImageMeta.type || 'output')}`;
 
-  console.log(`[ComfyUI Client] Downloading generated image from ${viewUrl}...`);
-  const imageRes = await fetch(viewUrl);
+  console.log(`[ComfyUI Client] Fetching rendered image from ${viewUrl}...`);
+  const imageRes = await fetch(viewUrl, { signal: getShutdownSignal() });
 
   if (!imageRes.ok) {
     throw new Error(`Failed to download ComfyUI image asset from ${viewUrl}`);
@@ -170,7 +212,7 @@ export async function generateComfyImage(
 
   const imageBuffer = Buffer.from(await imageRes.arrayBuffer());
 
-  // 6. Save image to /public/images/
+  // 6. Save image asset to /public/images/
   const imagesDir = path.join(process.cwd(), 'public', 'images');
   if (!fs.existsSync(imagesDir)) {
     fs.mkdirSync(imagesDir, { recursive: true });
@@ -180,14 +222,14 @@ export async function generateComfyImage(
   fs.writeFileSync(localFilePath, imageBuffer);
 
   const relativeUrl = `/public/images/${outputFilename}`;
-  console.log(`[ComfyUI Client] Saved local image asset to ${localFilePath} (${relativeUrl})`);
+  console.log(`[ComfyUI Client] Successfully saved image asset to ${localFilePath} (${relativeUrl})`);
 
   return relativeUrl;
 }
 
 async function getInstalledComfyCheckpoints(comfyUrl: string): Promise<string[]> {
   try {
-    const res = await fetch(`${comfyUrl}/object_info/CheckpointLoaderSimple`);
+    const res = await fetch(`${comfyUrl}/object_info/CheckpointLoaderSimple`, { signal: getShutdownSignal() });
     if (!res.ok) return [];
     const info = (await res.json()) as Record<string, any>;
     const ckptConfig = info?.CheckpointLoaderSimple?.input?.required?.ckpt_name;
