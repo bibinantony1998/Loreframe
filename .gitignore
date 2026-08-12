@@ -40,4 +40,18 @@ Thumbs.db
 *.db
 *.db-journal
 *.sqlite
-public/
+
+# UI Ignores
+ui/node_modules/
+ui/.next/
+ui/.env.local
+
+# ComfyUI & Models
+comfyui/
+*.safetensors
+*.ckpt
+
+public/videos/*
+public/audio/*
+public/images/*
+logs/
