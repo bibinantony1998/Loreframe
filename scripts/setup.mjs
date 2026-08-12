@@ -267,7 +267,7 @@ async function setup() {
   console.log(`  🦙 Ollama LLM:      ${ollamaUrl}`);
   console.log(`  🔴 Redis:           redis://localhost:${redisPort}`);
   console.log('--------------------------------------------------');
-  console.log('🚀 Application setup completed!\n');
+  console.log('🚀 Setup completed!. Please wait for all servers and UI to start (approximate 2 - 3 minutes)\n');
 }
 
 setup().catch((err) => {
