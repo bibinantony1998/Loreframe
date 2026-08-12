@@ -27,190 +27,78 @@ flowchart TD
 
 ---
 
-## 🛠️ Prerequisites & Local Service Setup
+## ⚡ Quick Start (One-Command Setup & Launch)
 
-To run Loreframe locally, you need the following background services installed and running.
+Loreframe includes an **automated, cross-platform setup runner** (`scripts/setup.mjs`). A single command prepares all dependencies, databases, AI models, Docker containers, and servers.
+
+### 1. Clone & Copy Environment Configuration
+```bash
+git clone https://github.com/bibinantony1998/Loreframe-server.git
+cd Loreframe-server
+cp .env.example .env
+```
+
+### 2. Run Unified Setup & Start All Services
+```bash
+npm start
+```
+
+That's it! `npm start` automatically executes the end-to-end setup workflow:
+
+1. **📦 Dependencies Installation:** Installs root backend & `./ui` frontend dependencies.
+2. **🗄️ Database Preparation:** Generates Prisma database client & schema migrations (`dev.db`).
+3. **🤖 ComfyUI & AI Models Provisioning:**
+   - Prepares Python virtual environment (`comfyui/venv`).
+   - Downloads **Stable Diffusion 1.5** (`v1-5-pruned-emaonly.ckpt`, 4.07 GB) & **Hyper-SD 4-Step LoRA** (`Hyper-SD15-4steps-lora.safetensors`, 256 MB) with live terminal progress reporting (`⏳ Downloading: 45% (1.8 GB / 4.07 GB)`).
+   - Hardlinks models for 100% path compatibility across root and subfolder structures.
+   - Auto-imports `Loreframe_Workflow.json` into workspace and sets default canvas settings.
+4. **🗣️ Kokoro TTS Docker Engine:** Auto-checks and launches `ghcr.io/remsky/kokoro-fastapi-cpu:latest` container (`kokoro-tts`) on port `8880`.
+5. **🧹 Clean Output & File Archiving:** Launches `logStreamer.mjs` to filter HTTP/warning noise from terminal while piping full detailed logs to `./logs/server.log`, `./logs/ui.log`, and `./logs/comfy.log`.
 
 ---
 
+## 🌐 Configured Services & Local Endpoints
+
+Once `npm start` completes, all services run concurrently:
+
+| Service | Local URL / Endpoint | Description |
+| :--- | :--- | :--- |
+| 🖥️ **Frontend UI** | [http://localhost:3000](http://localhost:3000) | Next.js interactive web app for generating & watching documentaries |
+| ⚙️ **Backend Server** | [http://localhost:3001](http://localhost:3001) | Express REST API & Real-time WebSocket event stream (`/ws`) |
+| 🎨 **ComfyUI Server** | [http://localhost:8188](http://localhost:8188) | Stable Diffusion + Hyper-SD LoRA image generation REST API |
+| 🗣️ **Kokoro TTS** | [http://localhost:8880/v1/audio/speech](http://localhost:8880/v1/audio/speech) | High-quality local voiceover speech synthesis container |
+| 🦙 **Ollama LLM** | [http://localhost:11434](http://localhost:11434) | Local LLM engine (`llama3.1:8b`) for story structuring |
+| 🔴 **Redis** | `redis://localhost:6379` | BullMQ async video generation queue |
+
+---
+
+## 🛠️ Prerequisites & Manual Service Setup
+
+If you prefer to start individual services manually or run background infrastructure separately, review the details below.
+
 ### 1. Redis (Queue & Job Management)
-
 Loreframe uses **BullMQ** on top of **Redis** to queue and process video rendering tasks asynchronously.
-
-#### Installation & Launch
 
 * **Using Docker (Recommended):**
   ```bash
   docker run -d --name loreframe-redis -p 6379:6379 redis:alpine
   ```
-
 * **Using Homebrew (macOS):**
   ```bash
-  brew install redis
-  brew services start redis
+  brew install redis && brew services start redis
   ```
 
-* **Verify Connection:**
-  ```bash
-  redis-cli ping
-  # Expected Output: PONG
-  ```
+### 2. Ollama (Local LLM Engine)
+1. **Install Ollama:** Download from [ollama.com](https://ollama.com).
+2. **Start Server:** `ollama serve` (default port `11434`).
+3. **Pull Model:** `ollama pull llama3.1:8b`
 
----
-
-### 2. Ollama (Local Large Language Model)
-
-Loreframe uses local LLMs via **Ollama** for non-cloud scriptwriting and documentary structuring.
-
-#### Installation & Setup
-
-1. **Install Ollama:** Download from [ollama.com](https://ollama.com) or run `brew install ollama`.
-2. **Start the Ollama Server:**
-   ```bash
-   ollama serve
-   ```
-   *(By default, Ollama listens on `http://localhost:11434`)*
-
-3. **Pull Required Models:**
-   ```bash
-   # Primary LLM Model (Script & Narrative Generation)
-   ollama pull llama3.1:8b
-
-   # Structured JSON Model (Used for scene parsing & JSON extraction)
-   ollama pull llama3.1:8b
-   ```
-
-4. **Environment Config (`.env`):**
-   ```env
-   LLM_PROVIDER="ollama"
-   OLLAMA_BASE_URL="http://localhost:11434"
-   OLLAMA_MODEL_NAME="llama3.1:8b"
-   OLLAMA_JSON_MODEL_NAME="llama3.1:8b"
-   ```
-
----
-
-### 3. ComfyUI (Local Image & LoRA Generation)
-
-Loreframe uses **ComfyUI** REST API to render high-resolution 16:9 visual assets using Stable Diffusion checkpoints and custom LoRAs.
-
-#### Installation & Setup
-
-1. **Clone & Install ComfyUI:**
-   Follow instructions at the [ComfyUI Repository](https://github.com/comfyanonymous/ComfyUI) or use ComfyUI Portable.
-
-2. **Place Models & Checkpoints:**
-   * **Checkpoints:** Download a SD 1.5 checkpoint (e.g. `v1-5-pruned-emaonly.safetensors` or SDXL / Flux checkpoints) and place it into:
-     ```
-     ComfyUI/models/checkpoints/
-     ```
-     *(Note: `comfyClient.ts` will automatically detect and fallback to any installed checkpoint if the default is not present.)*
-
-   * **LoRAs (Style & Aesthetic Models):** Place your style LoRA `.safetensors` files (e.g. vintage paper, oil painting, watercolor, historical documentary style) into:
-     ```
-     ComfyUI/models/loras/
-     ```
-
-3. **Workflow Integration:**
-   * Loreframe uses the workflow schema in [`src/workflows/comfy_image_workflow.json`](file:///Users/bibinantony/Documents/github/Loreframe-server/src/workflows/comfy_image_workflow.json).
-   * To add a LoRA node in ComfyUI:
-     - Add a `LoraLoader` node between your `CheckpointLoaderSimple` and `CLIPTextEncode`/`KSampler` nodes.
-     - Save/export your workflow as **API Format JSON** and update `src/workflows/comfy_image_workflow.json`.
-
-4. **Launch ComfyUI Server:**
-   ```bash
-   python main.py --listen 127.0.0.1 --port 8188
-   ```
-
-5. **Environment Config (`.env`):**
-   ```env
-   IMAGE_PROVIDER="comfyui"
-   COMFYUI_BASE_URL="http://localhost:8188"
-   ```
-
----
-
-### 4. Kokoro TTS (Local Voiceover Speech Engine)
-
-Loreframe uses **Kokoro TTS** via an OpenAI-compatible FastAPI REST service (`/v1/audio/speech`) for high-quality local voiceover synthesis.
-
-#### Installation & Launch
-
-* **Using Docker Container (Recommended):**
-  ```bash
-  docker run -d --name kokoro-tts -p 8880:8880 ghcr.io/resemble-ai/kokoro-fastapi
-  ```
-
-* **Available Voices:**
-  - `am_adam` *(Default American Male - deep narrator tone)*
-  - `af_bella` *(American Female)*
-  - `am_michael` *(American Male)*
-
-* **Environment Config (`.env`):**
-  ```env
-  TTS_PROVIDER="kokoro"
-  KOKORO_BASE_URL="http://localhost:8880/v1/audio/speech"
-  KOKORO_VOICE="am_adam"
-  ```
-
----
-
-## 🚀 Environment Setup & Project Execution
-
-### 1. Copy Environment Configuration
-
-Create a `.env` file in the project root:
-
+### 3. Kokoro TTS (Voiceover Engine)
+Kokoro TTS runs via Docker container:
 ```bash
-cp .env.example .env
+docker run -d --name kokoro-tts -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
 ```
-
-Ensure your `.env` contains:
-
-```env
-PORT=3001
-NODE_ENV=development
-DATABASE_URL="file:./dev.db"
-
-# Redis Config
-REDIS_HOST="localhost"
-REDIS_PORT=6379
-
-# LLM Config (ollama or gemini)
-LLM_PROVIDER="ollama"
-OLLAMA_BASE_URL="http://localhost:11434"
-OLLAMA_MODEL_NAME="llama3.1:8b"
-OLLAMA_JSON_MODEL_NAME="llama3.1:8b"
-GOOGLE_API_KEY="your-gemini-api-key-here"
-
-# Image Config (comfyui or gemini)
-IMAGE_PROVIDER="comfyui"
-COMFYUI_BASE_URL="http://localhost:8188"
-
-# TTS Config (kokoro or gcp)
-TTS_PROVIDER="kokoro"
-KOKORO_BASE_URL="http://localhost:8880/v1/audio/speech"
-KOKORO_VOICE="am_adam"
-```
-
-### 2. Install Dependencies & Prepare Database
-
-```bash
-# Install node dependencies
-npm install
-
-# Generate Prisma Client & Push SQLite Schema
-npm run db:generate
-npm run db:push
-```
-
-### 3. Start Development Server
-
-```bash
-npm run dev
-```
-
-The server starts on `http://localhost:3001`.
+*(Default voice: `am_adam` - deep American male narrator)*
 
 ---
 
@@ -222,11 +110,9 @@ The server starts on `http://localhost:3001`.
   ```json
   {
     "status": "ok",
-    "timestamp": "2026-08-04T08:26:32.000Z",
-    "services": {
-      "database": "connected",
-      "redis": "connected"
-    }
+    "timestamp": "2026-08-12T10:00:00.000Z",
+    "environment": "development",
+    "database": "connected"
   }
   ```
 
@@ -251,18 +137,20 @@ The server starts on `http://localhost:3001`.
 
 ---
 
-## 📁 Output Assets
+## 📁 Output Assets & Log Directories
 
-Generated media files are saved in `/public`:
+Media assets & logs are automatically organized:
 * `/public/audio/`: Synthesized narration voiceovers (`.mp3` / `.wav`)
 * `/public/images/`: 16:9 scene visuals rendered by ComfyUI (`.png`)
 * `/public/videos/`: Final assembled documentary MP4 video files (`.mp4`)
+* `/logs/server.log`: Detailed backend agent logs & stack traces
+* `/logs/ui.log`: Frontend Next.js compilation & network logs
+* `/logs/comfy.log`: ComfyUI Python engine logs
 
 ---
 
 ## 🧯 Troubleshooting & Fallbacks
 
-* **Ollama Connection Error:** Ensure `ollama serve` is running and `OLLAMA_BASE_URL` is set correctly.
-* **ComfyUI Fallback:** If ComfyUI is unavailable or encounters GPU OOM, Loreframe automatically generates dynamic gradient vector poster scenes via `Sharp` as a visual fallback so video assembly never fails.
+* **Unsaved Canvas Draft in ComfyUI:** If opening `http://localhost:8188` displays missing model warnings for old workflows (`qwen` / `z_image`), click **Workflow ➔ Open** in ComfyUI and select **`Loreframe_Workflow.json`**.
+* **ComfyUI Fallback:** If ComfyUI is unavailable or encounters GPU memory limits, Loreframe automatically generates dynamic gradient vector poster scenes via `Sharp` as a visual fallback so video assembly never fails.
 * **Kokoro TTS Fallback:** If Kokoro TTS is unreachable, Loreframe generates clear PCM tone audio buffers to ensure sequence sync remains intact.
-* **Redis Connection Refused:** Make sure Redis is listening on `6379`.
