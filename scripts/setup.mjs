@@ -13,6 +13,13 @@ console.log('--------------------------------------------------\n');
 
 function parseEnv() {
   const envPath = path.join(rootDir, '.env');
+  const envExamplePath = path.join(rootDir, '.env.example');
+  
+  if (!fs.existsSync(envPath) && fs.existsSync(envExamplePath)) {
+    console.log('📄 .env not found. Copying from .env.example...');
+    fs.copyFileSync(envExamplePath, envPath);
+  }
+
   const env = {};
   if (fs.existsSync(envPath)) {
     const lines = fs.readFileSync(envPath, 'utf-8').split('\n');
@@ -166,8 +173,9 @@ async function setup() {
     console.log('✅ 1/4 Backend Server dependencies already installed.');
   }
 
-  // 2. Database Client Generation
-  console.log('\n🗄️ 2/4 Generating Prisma Database client...');
+  // 2. Database Client Generation & Schema Push
+  console.log('\n🗄️ 2/4 Pushing Prisma schema and generating client...');
+  runCommand('npx prisma db push');
   runCommand('npx prisma generate');
 
   // 3. UI Dependencies
