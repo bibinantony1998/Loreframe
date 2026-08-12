@@ -4,9 +4,14 @@
   "description": "Multi-agent AI workflow backend for historical documentary video generation",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts",
+    "build": "tsc && npm run build --prefix ui",
+    "setup": "node scripts/setup.mjs",
+    "start": "npm run setup && npm run dev:all",
+    "dev": "npm run dev:all",
+    "dev:server": "node scripts/logStreamer.mjs server \"tsx watch src/index.ts\"",
+    "dev:ui": "node scripts/logStreamer.mjs ui \"npm run dev --prefix ui\"",
+    "dev:comfy": "node scripts/logStreamer.mjs comfy \"cd comfyui && venv/bin/python main.py --listen 127.0.0.1 --port 8188\"",
+    "dev:all": "concurrently -n \"SERVER,UI,COMFY\" -c \"blue,green,magenta\" \"npm run dev:server\" \"npm run dev:ui\" \"npm run dev:comfy\"",
     "db:generate": "prisma generate",
     "db:push": "prisma db push"
   },
@@ -38,6 +43,7 @@
     "@types/express": "^5.0.0",
     "@types/fluent-ffmpeg": "^2.1.27",
     "@types/node": "^22.13.1",
+    "concurrently": "^9.1.2",
     "prisma": "^6.3.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
