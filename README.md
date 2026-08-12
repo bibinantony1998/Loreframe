@@ -38,7 +38,24 @@ cd Loreframe-server
 cp .env.example .env
 ```
 
-### 2. Run Unified Setup & Start All Services
+### 2. Manual Prerequisite: Ollama & Llama 3.1 Setup
+Install and start **Ollama** locally for LLM scriptwriting:
+
+1. **Install Ollama:** Download from [ollama.com](https://ollama.com) or run:
+   ```bash
+   brew install ollama
+   ```
+2. **Start Ollama Server:**
+   ```bash
+   ollama serve
+   ```
+3. **Pull Llama 3.1 Model:**
+   ```bash
+   ollama pull llama3.1:8b
+   ```
+*(Note: Alternatively, set `LLM_PROVIDER="gemini"` and `GOOGLE_API_KEY="your_key"` in `.env` to use Gemini API without local Ollama).*
+
+### 3. Run Unified Setup & Start All Services
 ```bash
 npm start
 ```

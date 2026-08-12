@@ -46,7 +46,7 @@ async function downloadFile(url, destPath) {
       return;
     } else {
       console.log(`⚠️ Cleaning up incomplete file (${stats.size} bytes): ${path.basename(destPath)}`);
-      try { fs.unlinkSync(destPath); } catch (e) {}
+      try { fs.unlinkSync(destPath); } catch (e) { }
     }
   }
 
@@ -92,7 +92,7 @@ async function downloadFile(url, destPath) {
           resolve();
         });
       }).on('error', (err) => {
-        fs.unlink(destPath, () => {});
+        fs.unlink(destPath, () => { });
         reject(err);
       });
     };
@@ -113,12 +113,12 @@ async function setupComfyUI() {
       }
     }
     runCommand('git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git comfyui_git_tmp');
-    
+
     // Copy into comfyDir preserving existing models/
     runCommand(`cp -Rn comfyui_git_tmp/. comfyui/`);
     try {
       fs.rmSync(tmpCloneDir, { recursive: true, force: true });
-    } catch (e) {}
+    } catch (e) { }
     console.log('✅ ComfyUI repository cloned successfully.');
   } else {
     console.log('✅ ComfyUI core codebase already present.');
@@ -186,7 +186,7 @@ async function setup() {
   // 4. ComfyUI Environment Setup & Model Downloads
   console.log('\n🤖 4/4 Setting up ComfyUI codebase and model assets...');
   await setupComfyUI();
-  
+
   const comfyCheckpointsDir = path.join(comfyDir, 'models', 'checkpoints', 'SD1.5');
   const comfyLorasDir = path.join(comfyDir, 'models', 'loras', 'HyperSD', 'SD15');
   const baseCheckpointsDir = path.join(comfyDir, 'models', 'checkpoints');
@@ -236,7 +236,7 @@ async function setup() {
       }
       settings["Comfy.DefaultWorkflow"] = "Loreframe_Workflow.json";
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 4));
-    } catch (e) {}
+    } catch (e) { }
 
     console.log('✅ ComfyUI workflow auto-imported to user workspace (default.json & Loreframe_Workflow.json).');
   }
