@@ -58,7 +58,7 @@ async function downloadFile(url, destPath) {
     const request = (reqUrl) => {
       https.get(reqUrl, (response) => {
         if ([301, 302, 307, 308].includes(response.statusCode)) {
-          return request(response.headers.location);
+          return request(new URL(response.headers.location, reqUrl).href);
         }
         if (response.statusCode !== 200) {
           reject(new Error(`Failed to download: HTTP ${response.statusCode}`));
@@ -155,7 +155,7 @@ async function setup() {
   const kokoroUrl = env.KOKORO_BASE_URL || 'http://localhost:8880';
   const ollamaUrl = env.OLLAMA_BASE_URL || 'http://localhost:11434';
   const redisPort = env.REDIS_PORT || 6379;
-  const uiUrl = 'http://localhost:3000';
+  const uiUrl = 'http://localhost:3002';
 
   // 1. Root Server Dependencies
   const rootNodeModules = path.join(rootDir, 'node_modules');
@@ -267,7 +267,7 @@ async function setup() {
   console.log(`  🦙 Ollama LLM:      ${ollamaUrl}`);
   console.log(`  🔴 Redis:           redis://localhost:${redisPort}`);
   console.log('--------------------------------------------------');
-  console.log('🚀 Starting Backend Server, Frontend UI & ComfyUI Server...\n');
+  console.log('🚀 Application setup completed!\n');
 }
 
 setup().catch((err) => {

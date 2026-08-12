@@ -33,7 +33,7 @@ Loreframe includes an **automated, cross-platform setup runner** (`scripts/setup
 
 ### 1. Clone & Copy Environment Configuration
 ```bash
-git clone https://github.com/bibinantony1998/Loreframe-server.git
+git clone https://github.com/bibinantony1998/Loreframe.git
 cd Loreframe-server
 cp .env.example .env
 ```
