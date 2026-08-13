@@ -14,7 +14,7 @@ console.log('--------------------------------------------------\n');
 function parseEnv() {
   const envPath = path.join(rootDir, '.env');
   const envExamplePath = path.join(rootDir, '.env.example');
-  
+
   if (!fs.existsSync(envPath) && fs.existsSync(envExamplePath)) {
     console.log('📄 .env not found. Copying from .env.example...');
     fs.copyFileSync(envExamplePath, envPath);
@@ -268,14 +268,13 @@ async function setup() {
   console.log('\n--------------------------------------------------');
   console.log('🎉 Setup Complete! Configured Services & Ports:');
   console.log('--------------------------------------------------');
-  console.log(`  🖥️  Frontend UI:    ${uiUrl}`);
-  console.log(`  ⚙️  Backend Server: http://localhost:${serverPort} (from .env)`);
-  console.log(`  🎨 ComfyUI:         ${comfyUrl}`);
-  console.log(`  🗣️  Kokoro TTS:      ${kokoroUrl}`);
-  console.log(`  🦙 Ollama LLM:      ${ollamaUrl}`);
-  console.log(`  🔴 Redis:           redis://localhost:${redisPort}`);
+  console.log(`  🖥️  Frontend UI:    Will be available at ${uiUrl}`);
+  console.log(`  ⚙️  Backend Server: Will be available at http://localhost:${serverPort}`);
+  console.log(`  🎨 ComfyUI:         Will be available at ${comfyUrl}`);
+  console.log(`  🗣️  Kokoro TTS:      Will be available at ${kokoroUrl}`);
+  console.log(`  🦙 Ollama LLM:      Expect at ${ollamaUrl} - with modal mentioned in .env file`);
   console.log('--------------------------------------------------');
-  console.log('🚀 Setup completed!. Please wait for all servers and UI to start (approximate 2 - 3 minutes)\n');
+  console.log('🚀 Setup completed!. Please wait for all servers and UI to start (approximate 2 - 4 minutes)\n');
 }
 
 setup().catch((err) => {
